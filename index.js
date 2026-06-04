@@ -11,7 +11,7 @@ import { ensureFirebaseAdmin } from './utils/firebaseAdminInit.js';
 import { logEmailConfigStatus, verifyEmailTransport } from './services/emailService.js';
 
 const AUTH_BUILD_TAG = 'otp-email-v2';
-console.error(`\n========== AI DIET COACH BACKEND [${AUTH_BUILD_TAG}] ==========\n`);
+console.error(`\n========== WELLORA HEALTH BACKEND [${AUTH_BUILD_TAG}] ==========\n`);
 
 logEmailConfigStatus();
 verifyEmailTransport().catch((err) => {

@@ -73,11 +73,11 @@ export async function sendOTPEmail(email, otp) {
   }
 
   const isDev = process.env.NODE_ENV !== 'production';
-  const subject = 'AI Diet Coach — Email Verification Code';
+  const subject = 'Wellora Health — Email Verification Code';
   const text = `Your verification code is: ${code}\n\nEnter this 6-digit code in the app. It expires when you verify your email.\n\nIf you did not sign up, ignore this email.`;
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px">
-      <h2 style="color:#006B4D;margin:0 0 12px">AI Diet Coach</h2>
+      <h2 style="color:#006B4D;margin:0 0 12px">Wellora Health</h2>
       <p style="color:#333;font-size:15px;line-height:1.5">Your email verification code is:</p>
       <p style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#006B4D;margin:16px 0">${code}</p>
       <p style="color:#666;font-size:13px">Enter this code in the app to verify your account.</p>
@@ -89,7 +89,7 @@ export async function sendOTPEmail(email, otp) {
   try {
     const transporter = createSmtpTransporter();
     const info = await transporter.sendMail({
-      from: `"AI Diet Coach" <${user}>`,
+      from: `"Wellora Health" <${user}>`,
       to,
       subject,
       text,
@@ -137,7 +137,7 @@ export async function sendEmail(email, subject, text) {
   try {
     const transporter = createSmtpTransporter();
     const info = await transporter.sendMail({
-      from: `"AI Diet Coach" <${user}>`,
+      from: `"Wellora Health" <${user}>`,
       to: email,
       subject,
       text,

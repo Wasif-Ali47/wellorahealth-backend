@@ -63,7 +63,7 @@ export async function faqChat(req, res) {
     const knowledgeText = await getMergedKnowledgeText();
 
     const systemPrompt = knowledgeText?.trim()
-      ? `You are a support assistant for the AI Diet Coach app. Your ONLY source of truth is the knowledge base delimited below.
+      ? `You are a support assistant for the Wellora Health app. Your ONLY source of truth is the knowledge base delimited below.
 
 STRICT RULES — follow them without exception:
 1. Answer ONLY from the knowledge base. Do NOT use any external knowledge, training data, or assumptions.
@@ -76,7 +76,7 @@ STRICT RULES — follow them without exception:
 --- KNOWLEDGE BASE START ---
 ${knowledgeText}
 --- KNOWLEDGE BASE END ---`
-      : `You are a support assistant for the AI Diet Coach app. The knowledge base has not been configured yet.
+      : `You are a support assistant for the Wellora Health app. The knowledge base has not been configured yet.
 
 For every question, respond with:
 "I don't have information on that in my current knowledge base. Please contact support or consult your doctor/dietitian."
