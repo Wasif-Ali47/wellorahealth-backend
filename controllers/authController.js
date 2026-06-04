@@ -394,7 +394,7 @@ export const googleSignIn = async (req, res) => {
 export const guestLogin = async (req, res) => {
   try {
     const { deviceId } = req.body;
-    const guestEmail = `guest_${deviceId || Date.now()}@aidietcoach.app`;
+    const guestEmail = `guest_${deviceId || Date.now()}@wellorahealth.app`;
 
     let user = await User.findOne({ email: guestEmail });
     
@@ -460,7 +460,7 @@ export const upgradeGuest = async (req, res) => {
     }
 
     const em = (user.email || '').toLowerCase();
-    const isGuest = /^guest_[^@]+@aidietcoach\.app$/i.test(em);
+    const isGuest = /^guest_[^@]+@wellorahealth\.app$/i.test(em);
     if (!isGuest) {
       return res.status(400).json({
         success: false,

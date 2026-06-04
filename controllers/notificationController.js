@@ -66,7 +66,7 @@ export const registerToken = async (req, res) => {
       
       // Try to find an existing guest user (you might want to use device ID or similar)
       // For simplicity, we'll create a guest user with token-based email
-      const guestEmail = `guest_${token.substring(0, 10)}@aidietcoach.app`;
+      const guestEmail = `guest_${token.substring(0, 10)}@wellorahealth.app`;
       targetUser = await User.findOne({ email: guestEmail });
       
       if (!targetUser) {
