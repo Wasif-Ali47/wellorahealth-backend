@@ -1,13 +1,66 @@
 import express from 'express';
 import { body } from 'express-validator';
+import fs from 'fs';
+import multer from 'multer';
+import path from 'path';
 import { authenticate } from '../middleware/auth.js';
 import * as userController from '../controllers/userController.js';
 import * as coachQuestionnaireController from '../controllers/coachQuestionnaireController.js';
 
 const router = express.Router();
 
+const profileImageDir = path.join(process.cwd(), 'uploads', 'profileimages');
+fs.mkdirSync(profileImageDir, { recursive: true });
+
+function isGuestUser(user) {
+  return /^guest_[^@]+@wellorahealth\.app$/i.test(String(user?.email || ''));
+}
+
+function safeFilePart(value) {
+  return String(value || 'user')
+    .toLowerCase()
+    .replace(/[^a-z0-9@._-]+/g, '-')
+    .replace(/-+/g, '-');
+}
+
+function rejectGuestProfileUploads(req, res, next) {
+  if (isGuestUser(req.user)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Profile images are only available for signed-up users.',
+    });
+  }
+  next();
+}
+
+const profileImageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, profileImageDir),
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase() || '.jpg';
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      cb(null, `${safeFilePart(req.user?.email)}-${stamp}${ext}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!file.mimetype?.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed.'));
+    }
+    cb(null, true);
+  },
+});
+
 // Get current user profile
 router.get('/profile', authenticate, userController.getProfile);
+
+router.put(
+  '/profile/image',
+  authenticate,
+  rejectGuestProfileUploads,
+  profileImageUpload.single('profileImage'),
+  userController.updateProfileImage
+);
 
 // Update user profile (Personal Info)
 router.put('/profile/personal', authenticate, [
@@ -71,17 +124,27 @@ router.put('/coach-questionnaire', authenticate, [
   body('targetWeight').optional().isFloat({ min: 20, max: 500 }),
   body('preferredCuisine').optional().isString(),
   body('healthConditions').optional().isArray(),
+  body('foodAllergies').optional().isArray(),
   body('foodRestrictions').optional().isArray(),
+  body('dietaryPreferences').optional().isArray(),
   body('likedFoods').optional().isArray(),
+  body('foodsToAvoid').optional().isArray(),
   body('activityLevel').optional().isString(),
+  body('mealsPerDay').optional().isString(),
+  body('mealManagement').optional().isString(),
   body('weightLossPace').optional().isIn(['slow', 'balanced', 'fast']),
   body('foodStyles').optional().isArray(),
   body('dailyRoutine').optional().isString(),
   body('foodPreparer').optional().isString(),
   body('weightLossProblems').optional().isArray(),
+  body('mainGoalOther').optional().isString(),
   body('healthConditionsOther').optional().isString(),
+  body('foodAllergiesOther').optional().isString(),
   body('foodRestrictionsOther').optional().isString(),
+  body('foodStylesOther').optional().isString(),
   body('likedFoodsOther').optional().isString(),
+  body('foodsToAvoidOther').optional().isString(),
+  body('weightLossProblemsOther').optional().isString(),
   body('questionnaireComplete').optional().isBoolean()
 ], coachQuestionnaireController.updateCoachQuestionnaire);
 

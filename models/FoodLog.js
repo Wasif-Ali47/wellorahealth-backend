@@ -51,6 +51,20 @@ const foodLogSchema = new mongoose.Schema({
     enum: ['Breakfast', 'Lunch', 'Dinner', 'Snack'],
     default: 'Snack'
   },
+  source: {
+    type: String,
+    enum: ['manual', 'meal_plan'],
+    default: 'manual'
+  },
+  status: {
+    type: String,
+    enum: ['completed', 'skipped'],
+    default: 'completed'
+  },
+  plannedMealKey: {
+    type: String,
+    trim: true
+  },
   date: {
     type: Date,
     required: true,

@@ -39,7 +39,11 @@ export const getHomeDashboard = async (req, res) => {
 
     const calorieTarget = mealPlan?.dailyCalorieTarget || 2000;
     const macroTargets = mealPlan?.dailyMacroTargets || { protein: 120, carbs: 150, fat: 65 };
-    const waterTargetMl = 3000;
+    const estimatedWaterLitres = Math.max(
+      2,
+      Math.min(5, Math.round(((Number(user?.weight) || 70) * 35) / 1000))
+    );
+    const waterTargetMl = estimatedWaterLitres * 1000;
 
     const foodLogs = await FoodLog.find({ userId, ...dayFilter }).lean();
 
@@ -63,24 +67,33 @@ export const getHomeDashboard = async (req, res) => {
     const todayPlanDay = mealPlan?.days?.find((d) => d.dayNumber === todayDayNumber)
       || mealPlan?.days?.[0];
 
+    const plannedLogsByKey = new Map();
+    for (const log of foodLogs) {
+      if (log.source === 'meal_plan' && log.plannedMealKey) {
+        plannedLogsByKey.set(log.plannedMealKey, log);
+      }
+    }
+
     const meals = (todayPlanDay?.meals || []).map((m) => {
       const macros = m.macros || {};
+      const key = `${m.mealType || 'Snack'}::${String(m.name || '').trim().toLowerCase()}`;
+      const plannedLog = plannedLogsByKey.get(key);
       return {
         name: m.name,
         mealType: m.mealType,
         calories: m.calories,
+        portionGuide: m.portionGuide || '',
         macros: {
-          protein: Math.round(macros.protein || 0),
-          carbs: Math.round(macros.carbs || 0),
-          fat: Math.round(macros.fat || 0),
+          protein: Number(macros.protein || 0),
+          carbs: Number(macros.carbs || 0),
+          fat: Number(macros.fat || 0),
         },
-        protein: Math.round(macros.protein || 0),
+        protein: Number(macros.protein || 0),
         time: mealTimeLabel(m.mealType),
-        eaten: foodLogs.some(
-          (f) =>
-            f.mealType === m.mealType &&
-            f.foodName?.toLowerCase().includes(m.name?.toLowerCase()?.slice(0, 8) || '---')
-        ),
+        eaten: plannedLog?.status === 'completed',
+        skipped: plannedLog?.status === 'skipped',
+        logId: plannedLog?._id?.toString(),
+        plannedMealKey: key,
       };
     });
 
@@ -90,18 +103,18 @@ export const getHomeDashboard = async (req, res) => {
         greetingName: user?.firstName || 'there',
         planDay: todayDayNumber,
         calories: {
-          consumed: Math.round(caloriesConsumed),
+          consumed: caloriesConsumed,
           target: calorieTarget,
           remaining: Math.max(0, calorieTarget - caloriesConsumed)
         },
         water: {
           consumedMl: waterMl,
           targetMl: waterTargetMl,
-          displayL: Math.round((waterMl / 1000) * 10) / 10,
+          displayL: waterMl / 1000,
           targetL: waterTargetMl / 1000
         },
         protein: {
-          consumed: Math.round(proteinConsumed),
+          consumed: proteinConsumed,
           target: macroTargets.protein || 120
         },
         macroTargets,

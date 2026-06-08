@@ -6,6 +6,7 @@ import express from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
 import dns from 'dns';
+import path from 'path';
 import { startReminderPushScheduler } from './services/reminderPushScheduler.js';
 import { ensureFirebaseAdmin } from './utils/firebaseAdminInit.js';
 import { logEmailConfigStatus, verifyEmailTransport } from './services/emailService.js';
@@ -59,6 +60,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Request logger (after body parser so POST bodies are visible)
 app.use((req, res, next) => {

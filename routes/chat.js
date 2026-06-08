@@ -16,6 +16,11 @@ router.get('/conversations', authenticate, chatController.getConversations);
 // Get chat history (optional conversationId query)
 router.get('/history', authenticate, chatController.getChatHistory);
 
+// Rename one conversation
+router.put('/conversations/:conversationId', authenticate, [
+  body('title').trim().notEmpty()
+], chatController.renameConversation);
+
 // Clear chat history
 router.delete('/history', authenticate, chatController.clearChatHistory);
 

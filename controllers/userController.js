@@ -1,5 +1,22 @@
 import User from '../models/User.js';
 import { validationResult } from 'express-validator';
+import fs from 'fs/promises';
+import path from 'path';
+
+function isGuestUser(user) {
+  return /^guest_[^@]+@wellorahealth\.app$/i.test(String(user?.email || ''));
+}
+
+async function removeStoredProfileImage(relativePath) {
+  if (!relativePath || !relativePath.startsWith('uploads/profileimages/')) return;
+  try {
+    await fs.unlink(path.join(process.cwd(), relativePath));
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('[removeStoredProfileImage]', error.message);
+    }
+  }
+}
 
 /**
  * Get current user profile
@@ -78,6 +95,47 @@ export const updatePersonalInfo = async (req, res) => {
       success: false,
       message: 'Failed to update personal info',
       error: error.message
+    });
+  }
+};
+
+export const updateProfileImage = async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (isGuestUser(user)) {
+      if (req.file?.path) await fs.unlink(req.file.path).catch(() => {});
+      return res.status(403).json({
+        success: false,
+        message: 'Profile images are only available for signed-up users.',
+      });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'Profile image is required' });
+    }
+
+    await removeStoredProfileImage(user.profileImagePath);
+
+    const relativePath = path
+      .join('uploads', 'profileimages', req.file.filename)
+      .replace(/\\/g, '/');
+    user.profileImagePath = relativePath;
+    user.profileImageUrl = `/${relativePath}`;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Profile image updated successfully',
+      user,
+    });
+  } catch (error) {
+    if (req.file?.path) await fs.unlink(req.file.path).catch(() => {});
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update profile image',
+      error: error.message,
     });
   }
 };

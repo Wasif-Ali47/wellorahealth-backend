@@ -76,17 +76,22 @@ function calculateMacroTargets(calories) {
   };
 }
 
+function isGuestUser(user) {
+  return /^guest_[^@]+@wellorahealth\.app$/i.test(String(user?.email || ''));
+}
+
 
 export const generateMealPlan = async (req, res) => {
   const startTime = Date.now();
   try {
     // days=1 (single-day plan, fast generation right after questionnaire)
     // days=7 (full-week plan, user-initiated from Plan tab)
-    const requestedDays = parseInt(req.body?.days, 10) === 1 ? 1 : 7;
-    console.log(`[generateMealPlan] Starting meal plan generation (days=${requestedDays})...`);
-
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    const rawRequestedDays = parseInt(req.body?.days, 10) === 1 ? 1 : 7;
+    const requestedDays = isGuestUser(user) ? 1 : rawRequestedDays;
+    console.log(`[generateMealPlan] Starting meal plan generation (days=${requestedDays})...`);
 
     const dailyCalorieTarget = calculateCalorieTarget(user);
     const dailyMacroTargets = calculateMacroTargets(dailyCalorieTarget);
@@ -608,15 +613,42 @@ export const foodSwaps = async (req, res) => {
 // ---------------------------------------------------------------------------
 export const groceryList = async (req, res) => {
   try {
+    const { mealPlanId, generate } = req.query;
+    const shouldGenerate = generate === 'true' || generate === true;
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const activePlan = await MealPlan.findOne({ userId: req.userId, isActive: true }).sort({ createdAt: -1 });
+    const planQuery = mealPlanId
+      ? { _id: mealPlanId, userId: req.userId }
+      : { userId: req.userId, isActive: true };
+    const activePlan = await MealPlan.findOne(planQuery).sort({ createdAt: -1 });
+    if (!activePlan) return res.status(404).json({ success: false, message: 'Meal plan not found' });
+
+    if (activePlan.groceryList && !shouldGenerate) {
+      return res.json({
+        success: true,
+        hasList: true,
+        generatedAt: activePlan.groceryListGeneratedAt,
+        list: activePlan.groceryList
+      });
+    }
+
+    if (!shouldGenerate) {
+      return res.json({
+        success: true,
+        hasList: false,
+        generatedAt: null,
+        list: null
+      });
+    }
+
     const plannedMeals = [];
     if (activePlan && Array.isArray(activePlan.days)) {
       for (const day of activePlan.days) {
         for (const m of day.meals || []) {
-          if (m?.name) plannedMeals.push(m.name);
+          if (m?.name) {
+            plannedMeals.push([m.mealType, m.name, m.portionGuide].filter(Boolean).join(': '));
+          }
         }
       }
     }
@@ -624,7 +656,15 @@ export const groceryList = async (req, res) => {
     try {
       const list = await generateGroceryListWithAI(user, plannedMeals);
       if (!list || !list.categories || !list.categories.length) throw new Error('Empty grocery list');
-      return res.json({ success: true, list });
+      activePlan.groceryList = list;
+      activePlan.groceryListGeneratedAt = new Date();
+      await activePlan.save();
+      return res.json({
+        success: true,
+        hasList: true,
+        generatedAt: activePlan.groceryListGeneratedAt,
+        list
+      });
     } catch (err) {
       console.warn('[groceryList] AI failed, using fallback:', err.message);
       const fallback = {
@@ -669,7 +709,16 @@ export const groceryList = async (req, res) => {
         ],
         avoid: ['White sugar', 'Soft drinks', 'Fruit juice', 'Sweets / mithai', 'Naan / refined-flour breads']
       };
-      return res.json({ success: true, list: fallback });
+      activePlan.groceryList = fallback;
+      activePlan.groceryListGeneratedAt = new Date();
+      await activePlan.save();
+      return res.json({
+        success: true,
+        hasList: true,
+        generatedAt: activePlan.groceryListGeneratedAt,
+        list: fallback,
+        fallback: true
+      });
     }
   } catch (error) {
     console.error('[groceryList] error:', error);

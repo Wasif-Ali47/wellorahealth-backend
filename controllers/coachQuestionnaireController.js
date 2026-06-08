@@ -5,8 +5,12 @@ import { foodCatalog } from '../data/foodCatalog.js';
 const ALLOWED_MAIN_GOALS = [
   'lose_weight',
   'lose_belly_fat',
+  'gain_weight',
   'maintain_weight',
-  'improve_health'
+  'build_muscle',
+  'eat_healthier',
+  'improve_health',
+  'other'
 ];
 
 const ALLOWED_ACTIVITY = [
@@ -81,17 +85,27 @@ export const updateCoachQuestionnaire = async (req, res) => {
       targetWeight,
       preferredCuisine,
       healthConditions,
+      foodAllergies,
       foodRestrictions,
+      dietaryPreferences,
       likedFoods,
+      foodsToAvoid,
       activityLevel,
+      mealsPerDay,
+      mealManagement,
       weightLossPace,
       foodStyles,
       dailyRoutine,
       foodPreparer,
       weightLossProblems,
+      mainGoalOther,
       healthConditionsOther,
+      foodAllergiesOther,
       foodRestrictionsOther,
+      foodStylesOther,
       likedFoodsOther,
+      foodsToAvoidOther,
+      weightLossProblemsOther,
       questionnaireComplete
     } = req.body;
 
@@ -106,11 +120,19 @@ export const updateCoachQuestionnaire = async (req, res) => {
     if (age !== undefined) user.coachProfile.age = age;
     if (targetWeight !== undefined) user.coachProfile.targetWeight = targetWeight;
     if (preferredCuisine !== undefined) user.coachProfile.preferredCuisine = preferredCuisine;
+    if (foodAllergies !== undefined) user.coachProfile.foodAllergies = foodAllergies;
     if (foodRestrictions !== undefined) user.coachProfile.foodRestrictions = foodRestrictions;
+    if (dietaryPreferences !== undefined) {
+      user.coachProfile.dietaryPreferences = dietaryPreferences;
+      user.coachProfile.foodRestrictions = dietaryPreferences;
+    }
     if (likedFoods !== undefined) {
       user.coachProfile.likedFoods = likedFoods;
       user.foodLikes = likedFoods;
     }
+    if (foodsToAvoid !== undefined) user.coachProfile.foodsToAvoid = foodsToAvoid;
+    if (mealsPerDay !== undefined) user.coachProfile.mealsPerDay = mealsPerDay;
+    if (mealManagement !== undefined) user.coachProfile.mealManagement = mealManagement;
     if (weightLossPace !== undefined) {
       if (!ALLOWED_PACE.includes(weightLossPace)) {
         return res.status(400).json({ success: false, message: 'Invalid weightLossPace' });
@@ -121,9 +143,14 @@ export const updateCoachQuestionnaire = async (req, res) => {
     if (dailyRoutine !== undefined) user.coachProfile.dailyRoutine = dailyRoutine;
     if (foodPreparer !== undefined) user.coachProfile.foodPreparer = foodPreparer;
     if (weightLossProblems !== undefined) user.coachProfile.weightLossProblems = weightLossProblems;
+    if (mainGoalOther !== undefined) user.coachProfile.mainGoalOther = mainGoalOther;
     if (healthConditionsOther !== undefined) user.coachProfile.healthConditionsOther = healthConditionsOther;
+    if (foodAllergiesOther !== undefined) user.coachProfile.foodAllergiesOther = foodAllergiesOther;
     if (foodRestrictionsOther !== undefined) user.coachProfile.foodRestrictionsOther = foodRestrictionsOther;
+    if (foodStylesOther !== undefined) user.coachProfile.foodStylesOther = foodStylesOther;
     if (likedFoodsOther !== undefined) user.coachProfile.likedFoodsOther = likedFoodsOther;
+    if (foodsToAvoidOther !== undefined) user.coachProfile.foodsToAvoidOther = foodsToAvoidOther;
+    if (weightLossProblemsOther !== undefined) user.coachProfile.weightLossProblemsOther = weightLossProblemsOther;
     if (questionnaireComplete !== undefined) {
       user.coachProfile.questionnaireComplete = questionnaireComplete;
     }

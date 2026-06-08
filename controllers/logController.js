@@ -2,6 +2,7 @@ import FoodLog from '../models/FoodLog.js';
 import WaterLog from '../models/WaterLog.js';
 import ProgressLog from '../models/ProgressLog.js';
 import User from '../models/User.js';
+import mongoose from 'mongoose';
 import { parseNaturalLog, startOfDay } from '../services/naturalLogParserService.js';
 import {
   buildFoodLogFields,
@@ -11,21 +12,26 @@ import {
   formatWaterLogForHistory
 } from '../utils/foodLogHelpers.js';
 
+function plannedMealKey(mealType, foodName) {
+  return `${mealType || 'Snack'}::${String(foodName || '').trim().toLowerCase()}`;
+}
+
 async function savePlannedMealLog(req, res) {
-  const { foodName, mealType, calories, protein, carbs, fat } = req.body;
+  const { foodName, mealType, calories, protein, carbs, fat, status = 'completed' } = req.body;
   if (!foodName?.trim()) {
     return res.status(400).json({ success: false, message: 'foodName is required' });
   }
 
   const now = new Date();
   const today = startOfDay(now);
+  const skipped = status === 'skipped';
   const fields = buildPlannedMealLogFields({
-    foodName: foodName.trim(),
+    foodName: skipped ? `Skipped ${foodName.trim()}` : foodName.trim(),
     mealType,
-    calories,
-    protein,
-    carbs,
-    fat,
+    calories: skipped ? 0 : calories,
+    protein: skipped ? 0 : protein,
+    carbs: skipped ? 0 : carbs,
+    fat: skipped ? 0 : fat,
   });
   const { _display, ...persist } = fields;
 
@@ -33,13 +39,16 @@ async function savePlannedMealLog(req, res) {
     userId: req.userId,
     ...persist,
     macros: persist.macros,
+    source: 'meal_plan',
+    status: skipped ? 'skipped' : 'completed',
+    plannedMealKey: plannedMealKey(mealType, foodName),
     date: today,
     timestamp: now,
   });
 
   return res.status(201).json({
     success: true,
-    message: 'Meal logged from your plan',
+    message: skipped ? 'Meal skipped' : 'Meal logged from your plan',
     source: 'meal_plan',
     organized: [
       {
@@ -51,6 +60,7 @@ async function savePlannedMealLog(req, res) {
         calories: persist.calories,
         protein: persist.macros?.protein ?? 0,
         mealType: persist.mealType,
+        status: skipped ? 'skipped' : 'completed',
       },
     ],
     saved: { food: [log], water: [], weight: [] },
@@ -193,6 +203,40 @@ export const logPlannedMeal = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to log planned meal',
+      error: error.message,
+    });
+  }
+};
+
+/** DELETE /api/logs/planned-meal/:id — undo planned meal completion/skip */
+export const undoPlannedMeal = async (req, res) => {
+  try {
+    const { plannedMealKey: fallbackKey } = req.body || {};
+    const filters = [];
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      filters.push({ _id: req.params.id });
+    }
+    if (fallbackKey) {
+      filters.push({ plannedMealKey: fallbackKey });
+    }
+    if (filters.length === 0) {
+      return res.status(400).json({ success: false, message: 'Meal log id is required' });
+    }
+
+    const deleted = await FoodLog.findOneAndDelete({
+      userId: req.userId,
+      source: 'meal_plan',
+      $or: filters,
+    });
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Planned meal log not found' });
+    }
+    res.json({ success: true, message: 'Meal status undone' });
+  } catch (error) {
+    console.error('[undoPlannedMeal]', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to undo meal status',
       error: error.message,
     });
   }

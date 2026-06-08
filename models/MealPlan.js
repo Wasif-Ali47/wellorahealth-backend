@@ -78,6 +78,14 @@ const mealPlanSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+  groceryList: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
+  groceryListGeneratedAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true

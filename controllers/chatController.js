@@ -28,10 +28,15 @@ function serializeMessage(doc) {
 }
 
 const FREE_CHAT_LIMIT = Number(process.env.CARE_FREE_CHAT_LIMIT || 5);
+const REGISTERED_CHAT_LIMIT = Number(process.env.CARE_REGISTERED_CHAT_LIMIT || 999999);
 
 function computeUserIsPro(user) {
   if (user?.isPro) return true;
   return user?.subscriptionPlan === 'Premium';
+}
+
+function isGuestUser(user) {
+  return /^guest_[^@]+@wellorahealth\.app$/i.test(String(user?.email || ''));
 }
 
 async function ensureUsageCounter(user) {
@@ -67,13 +72,17 @@ async function buildEntitlement(user) {
   }
 
   const isPro = computeUserIsPro(user);
-  const remaining = isPro ? null : Math.max(0, FREE_CHAT_LIMIT - totalUsed);
+  const isGuest = isGuestUser(user);
+  const limit = isGuest ? FREE_CHAT_LIMIT : REGISTERED_CHAT_LIMIT;
+  const used = isGuest ? totalUsed : 0;
+  const remaining = isPro ? null : Math.max(0, limit - used);
   return {
     isPro,
-    freeLimit: FREE_CHAT_LIMIT,
-    used: totalUsed,
+    isGuest,
+    freeLimit: limit,
+    used,
     remaining,
-    hardLocked: !isPro && totalUsed >= FREE_CHAT_LIMIT,
+    hardLocked: isGuest && !isPro && totalUsed >= FREE_CHAT_LIMIT,
     subscription: {
       plan: user.subscriptionPlan || (isPro ? 'Premium' : 'Free'),
       status: user?.subscription?.status || (isPro ? 'active' : 'inactive'),
@@ -125,7 +134,7 @@ export const sendMessage = async (req, res) => {
       return res.status(402).json({
         success: false,
         code: 'CHAT_LIMIT_REACHED',
-        message: 'Free AI chat limit reached. Upgrade to continue.',
+        message: 'Guest chat limit reached. Sign up to continue chatting.',
         entitlement,
       });
     }
@@ -327,6 +336,52 @@ export const getConversations = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to list conversations',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Rename a conversation by updating all messages in that conversation.
+ */
+export const renameConversation = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { title } = req.body;
+    const cleanTitle = String(title || '').trim();
+    if (!cleanTitle) {
+      return res.status(400).json({ success: false, message: 'Title is required' });
+    }
+
+    const filter = { userId: req.userId };
+    if (conversationId === 'legacy') {
+      filter.$or = [
+        { conversationId: null },
+        { conversationId: { $exists: false } },
+      ];
+    } else {
+      filter.conversationId = conversationId;
+    }
+
+    const result = await ChatMessage.updateMany(filter, {
+      $set: { conversationTitle: cleanTitle },
+    });
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    res.json({
+      success: true,
+      conversationId,
+      conversationTitle: cleanTitle,
+      displayTitle: parseDisplayTitle(cleanTitle),
+    });
+  } catch (error) {
+    console.error('Rename conversation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to rename conversation',
       error: error.message,
     });
   }

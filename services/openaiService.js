@@ -50,7 +50,7 @@ function buildDiabeticContext(user) {
   // Map from questionnaire data structure:
   // coachProfile.mainGoal, age, targetWeight, preferredCuisine, weightLossPace, dailyRoutine, foodPreparer, weightLossProblems
   const coachProfile = user.coachProfile || {};
-  const mainGoal = coachProfile.mainGoal || 'Not specified';
+  const mainGoal = coachProfile.mainGoalOther || coachProfile.mainGoal || 'Not specified';
   const age = coachProfile.age || 'Not provided';
   const targetWeight = coachProfile.targetWeight || 'Not set';
   const cuisine = coachProfile.preferredCuisine || 'No preference';
