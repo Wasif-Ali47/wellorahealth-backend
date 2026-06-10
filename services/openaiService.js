@@ -57,6 +57,8 @@ function buildDiabeticContext(user) {
   const pace = coachProfile.weightLossPace || 'Not specified';
   const routine = coachProfile.dailyRoutine || 'Not specified';
   const preparer = coachProfile.foodPreparer || 'Not specified';
+  const mealsPerDay = coachProfile.mealsPerDay || 'Not specified';
+  const mealManagement = coachProfile.mealManagement || 'Not specified';
   const challenges = (coachProfile.weightLossProblems || []).join(', ') || 'None reported';
 
   return `USER HEALTH & DIET PROFILE
@@ -79,7 +81,25 @@ function buildDiabeticContext(user) {
 - Cooking time available: ${user.cookingTime || 'Moderate (20-40 min)'}
 - Daily routine: ${routine}
 - Food preparer: ${preparer}
+- Preferred meal routine: ${mealsPerDay}
+- Meal management style: ${mealManagement}
 - Weight loss challenges: ${challenges}`;
+}
+
+function mealRoutineInstruction(user) {
+  const routine = user.coachProfile?.mealsPerDay || '';
+  if (/2 meals \+ 1 snack/i.test(routine)) return 'Provide exactly 2 main meals and 1 snack. Do not add extra meals.';
+  if (/2 meals/i.test(routine)) return 'Provide exactly 2 main meals. Do not include snacks unless medically necessary.';
+  if (/3 meals \+ 1 snack/i.test(routine)) return 'Provide exactly 3 main meals and 1 snack.';
+  if (/3 meals/i.test(routine)) return 'Provide exactly 3 main meals. Do not include snacks.';
+  if (/irregular/i.test(routine)) return 'Provide flexible meal timing with 3 practical meal options and 1 optional snack.';
+  return 'Provide 3 main meals and 1 snack.';
+}
+
+function normalizeWaterTargetLitres(value, fallback = 3) {
+  const litres = Number(value);
+  if (!Number.isFinite(litres) || litres <= 0) return fallback;
+  return Math.max(2, Math.min(5, Math.round(litres)));
 }
 
 const DIABETIC_SYSTEM_PROMPT = `You are a certified nutrition coach for the "AI Diet Coach" app.
@@ -107,10 +127,12 @@ export async function generateMealPlanDayWithAI(user, dailyCalorieTarget, dailyM
 
   try {
     const context = buildDiabeticContext(user);
+    const mealRoutine = mealRoutineInstruction(user);
 
     const prompt = `${context}
 
-Generate Day ${dayNumber} of a 7-day DIABETIC meal plan. Provide 4 meals:
+Generate Day ${dayNumber} of a 7-day DIABETIC meal plan.
+Meal routine requirement: ${mealRoutine}
  - Breakfast ~${Math.round(dailyCalorieTarget * 0.25)}kcal
  - Lunch ~${Math.round(dailyCalorieTarget * 0.35)}kcal
  - Dinner ~${Math.round(dailyCalorieTarget * 0.30)}kcal
@@ -120,13 +142,15 @@ Macro targets per day: Carbs ${dailyMacroTargets.carbs}g (prefer complex carbs /
 
 RULES:
 - Use the user's local foods, likes, budget and cooking time wherever possible.
+- Follow the user's preferred meal routine and meal management style. The number of meals returned must match the meal routine requirement.
 - Each meal MUST include a clear "portionGuide" in everyday units (e.g. "1 roti + ½ cup daal + salad", "½ cup cooked basmati rice + chicken salan").
 - Each meal MUST include a "sugarImpact" tag: one of "Low", "Moderate", "Watch".
 - Avoid white sugar, sugary drinks, fruit juice, sweets / mithai, and large portions of white rice.
 - Description should explain WHY this meal is good for blood sugar (2-3 sentences).
+- Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
 
 Return JSON only:
-{"meals":[
+{"waterTargetLitres":3,"meals":[
   {"mealType":"Breakfast","name":"...","description":"...","portionGuide":"e.g. 1 roti + 1 boiled egg + ½ cup yoghurt","sugarImpact":"Low","calories":0,"macros":{"carbs":0,"protein":0,"fat":0},"tags":["Low GI","Diabetes-friendly"],"ingredients":["..."]},
   {"mealType":"Lunch", ...},
   {"mealType":"Dinner", ...},
@@ -180,7 +204,11 @@ Return JSON only:
       throw new Error('Invalid meal structure');
     }
 
-    return { meals, usage: response.usage || null };
+    return {
+      meals,
+      waterTargetLitres: normalizeWaterTargetLitres(mealData.waterTargetLitres),
+      usage: response.usage || null
+    };
   } catch (error) {
     console.error(`OpenAI meal plan generation error for day ${dayNumber}:`, error.message);
     throw error;
@@ -197,10 +225,12 @@ export async function generateMealPlanWithAI(user, dailyCalorieTarget, dailyMacr
 
   try {
     const context = buildDiabeticContext(user);
+    const mealRoutine = mealRoutineInstruction(user);
 
     const prompt = `${context}
 
-Generate a 7-DAY diabetic-safe meal plan. Each day must include 4 meals:
+Generate a 7-DAY diabetic-safe meal plan.
+Meal routine requirement: ${mealRoutine}
  - Breakfast ~${Math.round(dailyCalorieTarget * 0.25)}kcal
  - Lunch ~${Math.round(dailyCalorieTarget * 0.35)}kcal
  - Dinner ~${Math.round(dailyCalorieTarget * 0.30)}kcal
@@ -210,13 +240,15 @@ Macro targets per day: Carbs ${dailyMacroTargets.carbs}g (LOW-GI), Protein ${dai
 
 REQUIREMENTS:
 - Use the user's local foods, likes, budget and cooking time wherever possible.
+- Follow the user's preferred meal routine and meal management style. The number of meals returned for each day must match the meal routine requirement.
 - Vary meals across the 7 days (no exact repeats).
 - Each meal MUST include "portionGuide" in everyday units (e.g. "1 roti + ½ cup daal + salad", "½ cup cooked basmati rice + chicken salan").
 - Each meal MUST include a "sugarImpact" tag: "Low" | "Moderate" | "Watch".
 - Avoid white sugar, sugary drinks, mithai, fruit juice and large portions of white rice.
+- Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
 
 Return JSON only:
-{"days":[{"meals":[
+{"waterTargetLitres":3,"days":[{"meals":[
   {"mealType":"Breakfast","name":"...","description":"Why this is blood-sugar friendly (2-3 sentences)","portionGuide":"...","sugarImpact":"Low","calories":0,"macros":{"carbs":0,"protein":0,"fat":0},"tags":["Low GI","Diabetes-friendly"],"ingredients":["..."]},
   ...
 ]}, ... 7 days total ...]}`;
@@ -266,7 +298,11 @@ Return JSON only:
       }))
     }));
 
-    return { days, usage: response.usage || null };
+    return {
+      days,
+      waterTargetLitres: normalizeWaterTargetLitres(mealPlanData.waterTargetLitres),
+      usage: response.usage || null
+    };
   } catch (error) {
     console.error('OpenAI meal plan generation error:', error.message);
     throw error;
@@ -428,7 +464,9 @@ export async function generateGroceryListWithAI(user, plannedMeals = []) {
 Build a WEEKLY GROCERY LIST that is diabetic-safe, culturally appropriate (South Asian / Pakistani / Indian friendly) and matches the user's budget & cooking time.
 ${mealsHint}
 
-Group items by category. Use everyday units (kg, g, packs, pieces, dozen, cups). Include healthy local staples (atta, basmati rice in small qty, daal, chickpeas, vegetables, lean chicken / fish, eggs, plain yoghurt, nuts/seeds, low-sugar fruits like apple, guava, pear, berries).
+Group items by category. Use everyday units (kg, g, packs, pieces, dozen, cups).
+If planned meals are provided, include ONLY ingredients required by those planned meals and portion guides. Do not add extra healthy staples, snacks, fruits, or pantry items unless they are clearly needed for the listed meals.
+Combine duplicate ingredients across the week and estimate conservative quantities for one person.
 Avoid: white sugar, soft drinks, fruit juice, sweets / mithai, full-cream sweetened products.
 
 Return JSON only:

@@ -54,6 +54,46 @@ router.post('/verify-otp', authController.verifyOtp);
 
 router.post('/resend-otp', authController.resendOtp);
 
+router.post(
+  '/forgot-password',
+  body('email').isEmail().withMessage('Invalid email').normalizeEmail(),
+  validateAuthRequest,
+  authController.forgotPassword
+);
+
+router.post(
+  '/forgotPassword',
+  body('email').isEmail().withMessage('Invalid email').normalizeEmail(),
+  validateAuthRequest,
+  authController.forgotPassword
+);
+
+router.post(
+  '/reset-password',
+  [
+    body('email').isEmail().withMessage('Invalid email').normalizeEmail(),
+    body('otp').matches(/^\d{6}$/).withMessage('Enter the 6-digit code'),
+    body('newPassword')
+      .isLength({ min: 6 })
+      .withMessage('Password must be at least 6 characters'),
+  ],
+  validateAuthRequest,
+  authController.resetPassword
+);
+
+router.post(
+  '/resetPassword',
+  [
+    body('email').isEmail().withMessage('Invalid email').normalizeEmail(),
+    body('otp').matches(/^\d{6}$/).withMessage('Enter the 6-digit code'),
+    body('newPassword')
+      .isLength({ min: 6 })
+      .withMessage('Password must be at least 6 characters'),
+  ],
+  validateAuthRequest,
+  authController.resetPassword
+);
+
 // Login user
 router.post('/login', [
   body('email').isEmail().normalizeEmail(),

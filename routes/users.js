@@ -23,6 +23,15 @@ function safeFilePart(value) {
     .replace(/-+/g, '-');
 }
 
+function isAllowedProfileImage(file) {
+  const mime = String(file?.mimetype || '').toLowerCase();
+  if (mime.startsWith('image/')) return true;
+
+  const ext = path.extname(file?.originalname || '').toLowerCase();
+  return ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.heic', '.heif', '.bmp']
+    .includes(ext);
+}
+
 function rejectGuestProfileUploads(req, res, next) {
   if (isGuestUser(req.user)) {
     return res.status(403).json({
@@ -44,7 +53,7 @@ const profileImageUpload = multer({
   }),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (!file.mimetype?.startsWith('image/')) {
+    if (!isAllowedProfileImage(file)) {
       return cb(new Error('Only image files are allowed.'));
     }
     cb(null, true);

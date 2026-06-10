@@ -19,6 +19,9 @@ router.post('/swap', authenticate, [
   body('food').trim().notEmpty().isLength({ max: 500 })
 ], mealPlanController.foodSwaps);
 
+// Pro-only Diet Rescue gate
+router.post('/diet-rescue', authenticate, mealPlanController.dietRescue);
+
 // Weekly grocery list
 router.get('/grocery-list', authenticate, mealPlanController.groceryList);
 

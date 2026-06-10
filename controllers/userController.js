@@ -1,4 +1,13 @@
 import User from '../models/User.js';
+import MealPlan from '../models/MealPlan.js';
+import FoodLog from '../models/FoodLog.js';
+import WaterLog from '../models/WaterLog.js';
+import ProgressLog from '../models/ProgressLog.js';
+import ActivityLog from '../models/ActivityLog.js';
+import SymptomLog from '../models/SymptomLog.js';
+import Reminder from '../models/Reminder.js';
+import ChatMessage from '../models/ChatMessage.js';
+import ChatUsage from '../models/ChatUsage.js';
 import { validationResult } from 'express-validator';
 import fs from 'fs/promises';
 import path from 'path';
@@ -437,6 +446,29 @@ export const completeOnboarding = async (req, res) => {
  */
 export const deleteAccount = async (req, res) => {
   try {
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (isGuestUser(user)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account deletion is available for signed-up users.',
+      });
+    }
+
+    await Promise.all([
+      MealPlan.deleteMany({ userId: req.userId }),
+      FoodLog.deleteMany({ userId: req.userId }),
+      WaterLog.deleteMany({ userId: req.userId }),
+      ProgressLog.deleteMany({ userId: req.userId }),
+      ActivityLog.deleteMany({ userId: req.userId }),
+      SymptomLog.deleteMany({ userId: req.userId }),
+      Reminder.deleteMany({ userId: req.userId }),
+      ChatMessage.deleteMany({ userId: req.userId }),
+      ChatUsage.deleteMany({ userId: req.userId }),
+    ]);
+    await removeStoredProfileImage(user.profileImagePath);
     await User.findByIdAndDelete(req.userId);
     res.json({
       success: true,

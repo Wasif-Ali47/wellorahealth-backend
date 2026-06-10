@@ -80,6 +80,23 @@ function isGuestUser(user) {
   return /^guest_[^@]+@wellorahealth\.app$/i.test(String(user?.email || ''));
 }
 
+function waterTargetLitresForUser(user) {
+  const weight = Number(user?.weight) || 70;
+  return Math.max(2, Math.min(5, Math.round((weight * 35) / 1000)));
+}
+
+function expectedMealCountForUser(user) {
+  const routine = String(user?.coachProfile?.mealsPerDay || '');
+  if (/2 meals \+ 1 snack/i.test(routine)) return 3;
+  if (/2 meals/i.test(routine)) return 2;
+  if (/3 meals \+ 1 snack/i.test(routine)) return 4;
+  if (/3 meals/i.test(routine)) return 3;
+  return 4;
+}
+
+function isProUser(user) {
+  return user?.isPro === true || String(user?.subscriptionPlan || '').toLowerCase() === 'premium';
+}
 
 export const generateMealPlan = async (req, res) => {
   const startTime = Date.now();
@@ -95,6 +112,8 @@ export const generateMealPlan = async (req, res) => {
 
     const dailyCalorieTarget = calculateCalorieTarget(user);
     const dailyMacroTargets = calculateMacroTargets(dailyCalorieTarget);
+    let waterTargetLitres = waterTargetLitresForUser(user);
+    const expectedMealCount = expectedMealCountForUser(user);
     console.log(`[generateMealPlan] User profile loaded. Calorie target: ${dailyCalorieTarget}kcal`);
 
     const startDate = new Date();
@@ -119,6 +138,7 @@ export const generateMealPlan = async (req, res) => {
           1
         );
         aiDays = [{ meals: result?.meals || [] }];
+        if (result?.waterTargetLitres) waterTargetLitres = result.waterTargetLitres;
       } catch (err) {
         console.warn('[generateMealPlan] Single-day AI generation failed, will use fallback:', err.message);
         aiDays = [{ meals: [] }];
@@ -128,6 +148,7 @@ export const generateMealPlan = async (req, res) => {
       try {
         console.log('[generateMealPlan] Attempting to generate full 7-day plan in one API call...');
         const result = await generateMealPlanWithAI(user, dailyCalorieTarget, dailyMacroTargets);
+        if (result?.waterTargetLitres) waterTargetLitres = result.waterTargetLitres;
 
         if (result?.days && Array.isArray(result.days) && result.days.length >= 7) {
           console.log('[generateMealPlan] ✅ Successfully generated full 7-day plan in one call');
@@ -156,6 +177,8 @@ export const generateMealPlan = async (req, res) => {
         }
 
         const dayResults = await Promise.all(dayPromises);
+        const firstWaterTarget = dayResults.find((result) => result?.waterTargetLitres)?.waterTargetLitres;
+        if (firstWaterTarget) waterTargetLitres = firstWaterTarget;
 
         aiDays = dayResults.map((result) => ({
           meals: result?.meals || []
@@ -173,7 +196,7 @@ export const generateMealPlan = async (req, res) => {
       // Validate meals or use fallback
       const hasValidMeals =
         Array.isArray(meals) &&
-        meals.length >= 4 &&
+        meals.length >= expectedMealCount &&
         meals.every(
           (m) =>
             m &&
@@ -188,7 +211,7 @@ export const generateMealPlan = async (req, res) => {
 
       if (!hasValidMeals) {
         console.warn(`[generateMealPlan] Day ${i + 1} meals invalid, using fallback`);
-        meals = getFallbackMeals(i, dailyCalorieTarget);
+        meals = getFallbackMeals(i, dailyCalorieTarget).slice(0, expectedMealCount);
       }
 
       // Normalise diabetes-specific fields so they are always saved.
@@ -223,6 +246,7 @@ export const generateMealPlan = async (req, res) => {
       endDate,
       dailyCalorieTarget,
       dailyMacroTargets,
+      waterTargetLitres,
       days,
       isActive: true,
     });
@@ -587,6 +611,13 @@ export const foodSwaps = async (req, res) => {
 
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!isProUser(user)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Swap Meal Pro is available for Pro users.',
+        code: 'PRO_REQUIRED'
+      });
+    }
 
     try {
       const swaps = await generateFoodSwapsWithAI(user, food.trim());
@@ -605,6 +636,36 @@ export const foodSwaps = async (req, res) => {
   } catch (error) {
     console.error('[foodSwaps] error:', error);
     res.status(500).json({ success: false, message: 'Failed to get swaps', error: error.message });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Diet Rescue
+// ---------------------------------------------------------------------------
+export const dietRescue = async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!isProUser(user)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Diet Rescue Mode is available for Pro users.',
+        code: 'PRO_REQUIRED'
+      });
+    }
+
+    const activePlan = await MealPlan.findOne({ userId: req.userId, isActive: true }).sort({ createdAt: -1 });
+    if (!activePlan) {
+      return res.status(404).json({ success: false, message: 'Meal plan not found' });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Diet Rescue Mode is ready for your remaining day.'
+    });
+  } catch (error) {
+    console.error('[dietRescue] error:', error);
+    res.status(500).json({ success: false, message: 'Failed to start Diet Rescue Mode', error: error.message });
   }
 };
 

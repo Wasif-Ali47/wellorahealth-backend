@@ -4,6 +4,7 @@ import { proteinFromLog, toLocalDateKey } from '../utils/foodLogHelpers.js';
 import ActivityLog from '../models/ActivityLog.js';
 import MealPlan from '../models/MealPlan.js';
 import SymptomLog from '../models/SymptomLog.js';
+import User from '../models/User.js';
 
 /**
  * Log weight entry
@@ -131,6 +132,9 @@ export const getProgressDashboard = async (req, res) => {
       ],
     };
 
+    const user = await User.findById(req.userId).select('email subscriptionPlan isPro').lean();
+    const isGuest = /^guest_[^@]+@wellorahealth\.app$/i.test(user?.email || '');
+
     // Get user's meal plan for targets
     const mealPlan = await MealPlan.findOne({
       userId: req.userId,
@@ -175,7 +179,7 @@ export const getProgressDashboard = async (req, res) => {
       const dateKey = toLocalDateKey(log.timestamp || log.date, timezoneOffset);
       caloriesByDay[dateKey] = (caloriesByDay[dateKey] || 0) + (Number(log.calories) || 0);
     });
-    const loggingStreak = computeLoggingStreak(caloriesByDay, timezoneOffset);
+    const loggingStreak = isGuest ? 0 : computeLoggingStreak(caloriesByDay, timezoneOffset);
 
     // Daily summaries for chart (local calendar days)
     const dailySummaries = {};

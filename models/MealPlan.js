@@ -55,6 +55,10 @@ const mealPlanSchema = new mongoose.Schema({
     protein: { type: Number, default: 0 },
     fat: { type: Number, default: 0 }
   },
+  waterTargetLitres: {
+    type: Number,
+    default: 3
+  },
   days: [{
     dayNumber: {
       type: Number,

@@ -131,6 +131,8 @@ app.get('/api', (req, res) => {
           'POST /signup',
           'POST /verify-otp',
           'POST /resend-otp',
+          'POST /forgot-password',
+          'POST /reset-password',
           'POST /register',
           'POST /login',
           'POST /guest',

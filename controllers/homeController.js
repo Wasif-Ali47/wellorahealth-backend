@@ -39,10 +39,10 @@ export const getHomeDashboard = async (req, res) => {
 
     const calorieTarget = mealPlan?.dailyCalorieTarget || 2000;
     const macroTargets = mealPlan?.dailyMacroTargets || { protein: 120, carbs: 150, fat: 65 };
-    const estimatedWaterLitres = Math.max(
-      2,
-      Math.min(5, Math.round(((Number(user?.weight) || 70) * 35) / 1000))
-    );
+    const planWaterLitres = Number(mealPlan?.waterTargetLitres);
+    const estimatedWaterLitres = Number.isFinite(planWaterLitres) && planWaterLitres > 0
+      ? Math.round(planWaterLitres)
+      : Math.max(2, Math.min(5, Math.round(((Number(user?.weight) || 70) * 35) / 1000)));
     const waterTargetMl = estimatedWaterLitres * 1000;
 
     const foodLogs = await FoodLog.find({ userId, ...dayFilter }).lean();

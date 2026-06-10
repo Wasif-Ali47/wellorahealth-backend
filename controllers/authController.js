@@ -3,7 +3,7 @@ import { generateToken, JWT_SECRET } from '../middleware/auth.js';
 import { validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
-import { sendOTPEmail } from '../services/emailService.js';
+import { sendEmail, sendOTPEmail } from '../services/emailService.js';
 import { AUTH_MESSAGES } from '../utils/authMessages.js';
 
 const googleOAuthClient = process.env.GOOGLE_CLIENT_ID
@@ -29,6 +29,26 @@ function splitNameToFirstLast(displayName) {
     firstName: parts[0],
     lastName: parts.slice(1).join(' '),
   };
+}
+
+function normalizeGoogleProfileImageUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:') return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+}
+
+function isValidOtp(value) {
+  return /^\d{6}$/.test(String(value || '').trim());
 }
 
 /**
@@ -222,6 +242,90 @@ export const resendOtp = async (req, res) => {
 };
 
 /**
+ * Start password reset - body: { email }
+ * Sends a 6-digit reset code to the user's email.
+ */
+export const forgotPassword = async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+
+    if (!email) {
+      return res.status(400).json({ error: AUTH_MESSAGES.EMAIL_REQUIRED });
+    }
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ error: AUTH_MESSAGES.USER_NOT_FOUND });
+    }
+
+    if (user.active === false || user.isBanned === true) {
+      return res.status(403).json({
+        error: 'This account cannot reset password. Please contact support.',
+      });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.resetOTP = otp;
+    await user.save();
+
+    await sendEmail(
+      email,
+      'Wellora Health - Reset Password Code',
+      `Your password reset code is: ${otp}\n\nEnter this 6-digit code in the app to choose a new password. If you did not request this, ignore this email.`
+    );
+
+    res.json({ success: true, message: 'OTP sent' });
+  } catch (err) {
+    console.error('[auth][forgot-password] FAILED:', err?.message || err);
+    res.status(500).json({ error: AUTH_MESSAGES.NETWORK_ERROR });
+  }
+};
+
+/**
+ * Complete password reset - body: { email, otp, newPassword }
+ */
+export const resetPassword = async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const otp = String(req.body?.otp || '').trim();
+    const newPassword = String(req.body?.newPassword || '');
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ error: AUTH_MESSAGES.ALL_FIELDS_REQUIRED });
+    }
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+    if (!isValidOtp(otp)) {
+      return res.status(400).json({ error: 'Invalid OTP format' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        error: 'Password must be at least 6 characters',
+      });
+    }
+
+    const user = await User.findOne({ email, resetOTP: otp });
+    if (!user) {
+      return res.status(400).json({ error: AUTH_MESSAGES.INVALID_OTP });
+    }
+
+    user.password = newPassword;
+    user.resetOTP = null;
+    user.emailVerified = true;
+    await user.save();
+
+    res.json({ success: true, message: 'Password reset successful' });
+  } catch (err) {
+    console.error('[auth][reset-password] FAILED:', err?.message || err);
+    res.status(500).json({ error: AUTH_MESSAGES.NETWORK_ERROR });
+  }
+};
+
+/**
  * Login user
  */
 export const login = async (req, res) => {
@@ -329,6 +433,8 @@ export const googleSignIn = async (req, res) => {
     const { firstName, lastName } = splitNameToFirstLast(
       payload.name || [payload.given_name, payload.family_name].filter(Boolean).join(' ')
     );
+    const googleProfileImageUrl = normalizeGoogleProfileImageUrl(payload.picture)
+      || normalizeGoogleProfileImageUrl(req.body?.photoUrl);
 
     let user = await User.findOne({ $or: [{ googleId }, { email }] });
 
@@ -338,6 +444,7 @@ export const googleSignIn = async (req, res) => {
         googleId,
         firstName: firstName || payload.given_name || 'User',
         lastName: lastName || payload.family_name,
+        profileImageUrl: googleProfileImageUrl,
         emailVerified: true,
         onboardingComplete: false,
       });
@@ -356,6 +463,9 @@ export const googleSignIn = async (req, res) => {
       if (!user.lastName && (lastName || payload.family_name)) {
         user.lastName = lastName || payload.family_name;
       }
+      if (!user.profileImageUrl && googleProfileImageUrl) {
+        user.profileImageUrl = googleProfileImageUrl;
+      }
       await user.save();
       console.log(`[auth][google] Existing user id=${user._id} email=${email}`);
     }
@@ -372,6 +482,9 @@ export const googleSignIn = async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        profileImageUrl: user.profileImageUrl,
+        subscriptionPlan: user.subscriptionPlan,
+        isPro: user.isPro === true,
         onboardingComplete: user.onboardingComplete,
       },
     });
