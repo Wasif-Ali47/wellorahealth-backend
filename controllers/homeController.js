@@ -97,6 +97,37 @@ export const getHomeDashboard = async (req, res) => {
       };
     });
 
+    // Protein target = sum of protein in today's planned meals (more accurate than stored dailyMacroTargets)
+    const planProteinTarget = (todayPlanDay?.meals || []).reduce(
+      (sum, m) => sum + (Number(m.macros?.protein) || 0), 0
+    );
+    const effectiveProteinTarget = planProteinTarget > 0
+      ? Math.round(planProteinTarget)
+      : (macroTargets.protein || 120);
+
+    // Append extra food logs (not from meal plan) as additional meal entries
+    const extraFoodLogs = foodLogs.filter((l) => l.source !== 'meal_plan');
+    for (const log of extraFoodLogs) {
+      const macros = log.macros || {};
+      meals.push({
+        name: log.foodName || log.displayTitle || 'Extra food',
+        mealType: log.mealType || 'Snack',
+        calories: Number(log.calories) || 0,
+        portionGuide: '',
+        macros: {
+          protein: Number(macros.protein || 0),
+          carbs: Number(macros.carbs || 0),
+          fat: Number(macros.fat || 0),
+        },
+        protein: Number(macros.protein || 0),
+        time: mealTimeLabel(log.mealType),
+        eaten: true,
+        skipped: false,
+        logId: log._id?.toString(),
+        isExtraLog: true,
+      });
+    }
+
     res.json({
       success: true,
       dashboard: {
@@ -115,7 +146,7 @@ export const getHomeDashboard = async (req, res) => {
         },
         protein: {
           consumed: proteinConsumed,
-          target: macroTargets.protein || 120
+          target: effectiveProteinTarget,
         },
         macroTargets,
         todaysMeals: meals,

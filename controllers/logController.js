@@ -133,7 +133,7 @@ export const logNatural = async (req, res) => {
         const log = await ProgressLog.create({
           userId: req.userId,
           weight: kg,
-          date: today,
+          date: now,
           notes: text.trim()
         });
         await User.findByIdAndUpdate(req.userId, { weight: kg });
@@ -239,6 +239,44 @@ export const undoPlannedMeal = async (req, res) => {
       message: 'Failed to undo meal status',
       error: error.message,
     });
+  }
+};
+
+/**
+ * DELETE /api/logs/water/glass — remove the last 250ml water log entry for today.
+ */
+export const removeLastWaterGlass = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const now = new Date();
+    const today = startOfDay(now);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // Find the most recent water log for today
+    const last = await WaterLog.findOne({
+      userId,
+      $or: [
+        { timestamp: { $gte: today, $lt: tomorrow } },
+        { date: { $gte: today, $lt: tomorrow } },
+      ],
+    }).sort({ timestamp: -1 });
+
+    if (!last) {
+      return res.status(404).json({ success: false, message: 'No water log found for today' });
+    }
+
+    if (last.amountMl <= 250) {
+      await last.deleteOne();
+    } else {
+      last.amountMl -= 250;
+      await last.save();
+    }
+
+    return res.json({ success: true, message: 'Water glass removed' });
+  } catch (error) {
+    console.error('[removeLastWaterGlass]', error);
+    res.status(500).json({ success: false, message: 'Failed to remove water log', error: error.message });
   }
 };
 

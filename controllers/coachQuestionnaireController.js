@@ -17,7 +17,8 @@ const ALLOWED_ACTIVITY = [
   'Sedentary',
   'Lightly Active',
   'Moderately Active',
-  'Very Active'
+  'Very Active',
+  'Extremely Active'
 ];
 
 const ALLOWED_PACE = ['slow', 'balanced', 'fast'];
@@ -39,7 +40,8 @@ export const getCoachQuestionnaire = async (req, res) => {
       weight: user.weight,
       activityLevel: user.activityLevel,
       healthConditions: user.healthConditions || [],
-      foodLikes: user.foodLikes || []
+      foodLikes: user.foodLikes || [],
+      gender: (user.coachProfile || {}).gender || null
     });
   } catch (error) {
     res.status(500).json({
@@ -79,6 +81,7 @@ export const updateCoachQuestionnaire = async (req, res) => {
 
     const {
       mainGoal,
+      gender,
       age,
       heightCm,
       weight,
@@ -116,6 +119,9 @@ export const updateCoachQuestionnaire = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Invalid mainGoal' });
       }
       user.coachProfile.mainGoal = mainGoal;
+    }
+    if (gender !== undefined) {
+      user.coachProfile.gender = gender;
     }
     if (age !== undefined) user.coachProfile.age = age;
     if (targetWeight !== undefined) user.coachProfile.targetWeight = targetWeight;

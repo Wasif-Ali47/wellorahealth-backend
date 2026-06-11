@@ -207,6 +207,7 @@ const userSchema = new mongoose.Schema({
   // AI Coach questionnaire (post-intro onboarding)
   coachProfile: {
     mainGoal: { type: String },
+    gender: { type: String },
     age: { type: Number },
     targetWeight: { type: Number },
     preferredCuisine: { type: String },
