@@ -111,7 +111,7 @@ export const getHomeDashboard = async (req, res) => {
       const macros = log.macros || {};
       meals.push({
         name: log.foodName || log.displayTitle || 'Extra food',
-        mealType: log.mealType || 'Snack',
+        mealType: 'Extra food',
         calories: Number(log.calories) || 0,
         portionGuide: '',
         macros: {
@@ -120,7 +120,7 @@ export const getHomeDashboard = async (req, res) => {
           fat: Number(macros.fat || 0),
         },
         protein: Number(macros.protein || 0),
-        time: mealTimeLabel(log.mealType),
+        time: '',
         eaten: true,
         skipped: false,
         logId: log._id?.toString(),

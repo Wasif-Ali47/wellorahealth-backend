@@ -1,5 +1,6 @@
 import MealPlan from '../models/MealPlan.js';
 import User from '../models/User.js';
+import FoodLog from '../models/FoodLog.js';
 import { validationResult } from 'express-validator';
 import {
   generateMealPlanWithAI,
@@ -642,6 +643,64 @@ export const foodSwaps = async (req, res) => {
 // ---------------------------------------------------------------------------
 // Diet Rescue
 // ---------------------------------------------------------------------------
+const rescueMealTemplates = {
+  breakfast: {
+    name: 'Diet Rescue Veggie Egg Plate',
+    portionGuide: '2 boiled egg whites + cucumber-tomato salad + unsweetened tea',
+    description: 'A very light protein-focused breakfast with fresh vegetables to keep the rest of the day steady after extra food.',
+    ingredients: ['Egg whites', 'Cucumber', 'Tomato', 'Green tea'],
+  },
+  lunch: {
+    name: 'Diet Rescue Grilled Chicken Salad',
+    portionGuide: '1 large salad bowl + 90 g grilled chicken + lemon dressing, no sugary sauces',
+    description: 'Lean protein and high-volume vegetables replace heavier lunch items so the remaining day stays lighter.',
+    ingredients: ['Chicken breast', 'Lettuce', 'Cucumber', 'Tomato', 'Lemon'],
+  },
+  dinner: {
+    name: 'Diet Rescue Clear Soup + Salad',
+    portionGuide: '1 large bowl vegetable clear soup + side cucumber salad',
+    description: 'A low-calorie dinner built around broth and non-starchy vegetables to compensate for overeating earlier.',
+    ingredients: ['Vegetable broth', 'Spinach', 'Carrot', 'Cucumber', 'Lemon'],
+  },
+  snack: {
+    name: 'Diet Rescue Cucumber Raita',
+    portionGuide: '1 small bowl plain yoghurt cucumber raita, no added sugar',
+    description: 'A small cooling snack with protein and water-rich cucumber, designed to avoid pushing calories higher.',
+    ingredients: ['Plain yoghurt', 'Cucumber', 'Mint'],
+  },
+};
+
+const rescueMacroSplit = (calories, mealType) => {
+  const type = String(mealType || '').toLowerCase();
+  const proteinRatio = type.includes('snack') ? 0.22 : 0.38;
+  const carbRatio = type.includes('dinner') ? 0.25 : 0.32;
+  const fatRatio = Math.max(0.18, 1 - proteinRatio - carbRatio);
+  return {
+    carbs: Math.max(0, Math.round((calories * carbRatio) / 4)),
+    protein: Math.max(0, Math.round((calories * proteinRatio) / 4)),
+    fat: Math.max(0, Math.round((calories * fatRatio) / 9)),
+  };
+};
+
+const buildRescueMeal = (meal, calories) => {
+  const mealType = meal.mealType || 'Snack';
+  const key = String(mealType).toLowerCase();
+  const template =
+    (key.includes('breakfast') && rescueMealTemplates.breakfast) ||
+    (key.includes('lunch') && rescueMealTemplates.lunch) ||
+    (key.includes('dinner') && rescueMealTemplates.dinner) ||
+    rescueMealTemplates.snack;
+
+  meal.name = template.name;
+  meal.description = template.description;
+  meal.portionGuide = template.portionGuide;
+  meal.sugarImpact = 'Low';
+  meal.calories = calories;
+  meal.macros = rescueMacroSplit(calories, mealType);
+  meal.tags = Array.from(new Set([...(meal.tags || []), 'Diet Rescue', 'Light meal', 'Low calorie']));
+  meal.ingredients = template.ingredients;
+};
+
 export const dietRescue = async (req, res) => {
   try {
     const user = await User.findById(req.userId);
@@ -659,9 +718,86 @@ export const dietRescue = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Meal plan not found' });
     }
 
+    const today = new Date();
+    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const startDate = new Date(activePlan.startDate);
+    const planStartDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+    const diffDays = Math.max(0, Math.floor((todayDate.getTime() - planStartDate.getTime()) / 86400000));
+    const dayIndex = Math.min(diffDays, Math.max(0, (activePlan.days?.length || 1) - 1));
+    const dayPlan = activePlan.days?.[dayIndex];
+    if (!dayPlan || !Array.isArray(dayPlan.meals) || dayPlan.meals.length === 0) {
+      return res.status(404).json({ success: false, message: 'No meals found for today.' });
+    }
+
+    const tomorrowDate = new Date(todayDate);
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+    const foodLogs = await FoodLog.find({
+      userId: req.userId,
+      $or: [
+        { date: { $gte: todayDate, $lt: tomorrowDate } },
+        { timestamp: { $gte: todayDate, $lt: tomorrowDate } },
+      ],
+    }).lean();
+    const consumed = foodLogs.reduce((sum, log) => sum + (Number(log.calories) || 0), 0);
+    const remainingBudget = Math.max(0, Number(activePlan.dailyCalorieTarget || 0) - consumed);
+    const completedKeys = new Set(
+      foodLogs
+        .filter((log) => log.source === 'meal_plan' && log.status === 'completed' && log.plannedMealKey)
+        .map((log) => String(log.plannedMealKey))
+    );
+    const skippedKeys = new Set(
+      foodLogs
+        .filter((log) => log.source === 'meal_plan' && log.status === 'skipped' && log.plannedMealKey)
+        .map((log) => String(log.plannedMealKey))
+    );
+    const remainingMeals = dayPlan.meals.filter((meal) => {
+      const key = `${meal.mealType || 'Snack'}::${String(meal.name || '').trim().toLowerCase()}`;
+      return !completedKeys.has(key) && !skippedKeys.has(key);
+    });
+
+    if (remainingMeals.length === 0) {
+      return res.json({
+        success: true,
+        message: 'All planned meals for today are already logged. No remaining meals to adjust.',
+        adjustedMeals: 0,
+      });
+    }
+
+    const originalRemainingCalories = remainingMeals.reduce(
+      (sum, meal) => sum + (Number(meal.calories) || 0),
+      0
+    );
+    const rescueBudget = remainingBudget > 0
+      ? Math.min(remainingBudget, Math.max(remainingMeals.length * 90, originalRemainingCalories * 0.55))
+      : remainingMeals.length * 90;
+    const originalBudget = originalRemainingCalories || remainingMeals.length;
+
+    for (const meal of remainingMeals) {
+      const originalCalories = Number(meal.calories) || (originalBudget / remainingMeals.length);
+      const share = originalBudget > 0 ? originalCalories / originalBudget : 1 / remainingMeals.length;
+      const minCalories = String(meal.mealType || '').toLowerCase().includes('snack') ? 70 : 100;
+      const maxCalories = String(meal.mealType || '').toLowerCase().includes('dinner') ? 240 : 280;
+      const rescueCalories = Math.round(rescueBudget * share);
+      const newCalories = Math.max(minCalories, Math.min(maxCalories, rescueCalories));
+      buildRescueMeal(meal, newCalories);
+    }
+
+    dayPlan.totalCalories = dayPlan.meals.reduce((sum, meal) => sum + (Number(meal.calories) || 0), 0);
+    dayPlan.totalMacros = dayPlan.meals.reduce(
+      (sum, meal) => ({
+        carbs: sum.carbs + (Number(meal.macros?.carbs) || 0),
+        protein: sum.protein + (Number(meal.macros?.protein) || 0),
+        fat: sum.fat + (Number(meal.macros?.fat) || 0),
+      }),
+      { carbs: 0, protein: 0, fat: 0 }
+    );
+    await activePlan.save();
+
     return res.json({
       success: true,
-      message: 'Diet Rescue Mode is ready for your remaining day.'
+      message: `Diet Rescue updated ${remainingMeals.length} remaining meal${remainingMeals.length === 1 ? '' : 's'} for today.`,
+      adjustedMeals: remainingMeals.length,
+      remainingBudget,
     });
   } catch (error) {
     console.error('[dietRescue] error:', error);

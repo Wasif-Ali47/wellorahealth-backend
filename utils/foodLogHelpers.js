@@ -310,10 +310,11 @@ export function buildFoodLogFields(entry, fallbackText) {
 export function formatFoodLogForHistory(log) {
   const details = log.parsedDetails || {};
   const items = Array.isArray(details.items) ? details.items : [];
+  const mealType = log.source === 'meal_plan' ? log.mealType : 'Extra food';
 
   return {
     id: log._id,
-    title: `${log.mealType}: ${log.foodName}`,
+    title: `${mealType}: ${log.foodName}`,
     subtitle: log.organizedSummary || log.rawDescription || '',
     organizedSummary: log.organizedSummary || null,
     originalText: log.rawDescription || null,
@@ -327,7 +328,7 @@ export function formatFoodLogForHistory(log) {
     calories: log.calories,
     protein: proteinFromLog(log),
     macros: log.macros || null,
-    mealType: log.mealType,
+    mealType,
     timestamp: log.timestamp
   };
 }

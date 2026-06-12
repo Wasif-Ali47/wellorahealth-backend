@@ -28,7 +28,7 @@ function serializeMessage(doc) {
 }
 
 const FREE_CHAT_LIMIT = Number(process.env.CARE_FREE_CHAT_LIMIT || 5);
-const REGISTERED_CHAT_LIMIT = Number(process.env.CARE_REGISTERED_CHAT_LIMIT || 999999);
+const REGISTERED_CHAT_LIMIT = Number(process.env.CARE_REGISTERED_CHAT_LIMIT || 15);
 
 function computeUserIsPro(user) {
   if (user?.isPro) return true;
@@ -74,7 +74,7 @@ async function buildEntitlement(user) {
   const isPro = computeUserIsPro(user);
   const isGuest = isGuestUser(user);
   const limit = isGuest ? FREE_CHAT_LIMIT : REGISTERED_CHAT_LIMIT;
-  const used = isGuest ? totalUsed : 0;
+  const used = totalUsed;
   const remaining = isPro ? null : Math.max(0, limit - used);
   return {
     isPro,
@@ -82,7 +82,7 @@ async function buildEntitlement(user) {
     freeLimit: limit,
     used,
     remaining,
-    hardLocked: isGuest && !isPro && totalUsed >= FREE_CHAT_LIMIT,
+    hardLocked: !isPro && totalUsed >= limit,
     subscription: {
       plan: user.subscriptionPlan || (isPro ? 'Premium' : 'Free'),
       status: user?.subscription?.status || (isPro ? 'active' : 'inactive'),
@@ -131,10 +131,11 @@ export const sendMessage = async (req, res) => {
 
     const entitlement = await buildEntitlement(user);
     if (entitlement.hardLocked) {
+      const accountType = entitlement.isGuest ? 'Guest' : 'Free';
       return res.status(402).json({
         success: false,
         code: 'CHAT_LIMIT_REACHED',
-        message: 'Guest chat limit reached. Sign up to continue chatting.',
+        message: `${accountType} chat limit reached. Upgrade to continue chatting.`,
         entitlement,
       });
     }
