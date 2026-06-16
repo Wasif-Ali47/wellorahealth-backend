@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GOOGLE_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/androidpublisher';
+const DEFAULT_ANDROID_PACKAGE_NAME = 'com.wellorahealth.app.aiappspace';
 
 let cachedAccessToken = null;
 let cachedAccessTokenExpMs = 0;
@@ -157,7 +158,7 @@ export async function verifyIapPurchase({
     };
   }
 
-  const appPackage = packageName || process.env.ANDROID_PACKAGE_NAME;
+  const appPackage = packageName || process.env.ANDROID_PACKAGE_NAME || DEFAULT_ANDROID_PACKAGE_NAME;
   try {
     return await verifyAndroidPurchase({
       packageName: appPackage,

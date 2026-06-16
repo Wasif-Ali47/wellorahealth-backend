@@ -20,7 +20,6 @@ export const getUsageOverview = async (req, res) => {
         },
       ]),
       ChatUsage.aggregate([
-        { $match: { feature: 'care-chat' } },
         {
           $group: {
             _id: null,
@@ -55,7 +54,7 @@ export const getUsers = async (req, res) => {
     const [users, chatAgg] = await Promise.all([
       User.find({}).select('-password -otp -resetOTP').sort({ createdAt: -1 }).lean(),
       ChatUsage.aggregate([
-        { $match: { feature: 'care-chat', userId: { $ne: null } } },
+        { $match: { userId: { $ne: null } } },
         {
           $group: {
             _id: '$userId',

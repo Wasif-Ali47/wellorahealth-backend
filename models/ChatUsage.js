@@ -15,7 +15,16 @@ const chatUsageSchema = new mongoose.Schema(
     },
     feature: {
       type: String,
-      enum: ['meal-plan', 'care-chat', 'faq-chat'],
+      enum: [
+        'meal-plan',
+        'meal-plan-day',
+        'food-safety-check',
+        'food-swap',
+        'grocery-list',
+        'natural-log',
+        'care-chat',
+        'faq-chat',
+      ],
       default: 'care-chat',
     },
     model: {

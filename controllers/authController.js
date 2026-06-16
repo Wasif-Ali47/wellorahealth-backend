@@ -180,9 +180,7 @@ export const resendOtp = async (req, res) => {
     });
 
     let user = null;
-    if (userId) {
-      user = await User.findById(userId);
-    } else if (email?.trim()) {
+    if (email?.trim()) {
       const normalizedEmail = email.trim().toLowerCase();
       user = await User.findOne({ email: normalizedEmail });
       if (!user) {
@@ -198,6 +196,8 @@ export const resendOtp = async (req, res) => {
         console.log('[auth][resend-otp] FAILED: wrong password');
         return res.status(400).json({ error: AUTH_MESSAGES.WRONG_PASSWORD });
       }
+    } else if (userId) {
+      user = await User.findById(userId);
     } else {
       console.log('[auth][resend-otp] FAILED: userId or email required');
       return res.status(400).json({ error: 'userId or email is required' });
@@ -348,14 +348,6 @@ export const login = async (req, res) => {
       return res.status(400).json({ error: AUTH_MESSAGES.USER_NOT_FOUND });
     }
 
-    if (user.emailVerified === false) {
-      console.log(`[auth][login] BLOCKED unverified email=${normalizedEmail} userId=${user._id}`);
-      return res.status(400).json({
-        error: AUTH_MESSAGES.EMAIL_NOT_VERIFIED,
-        userId: user._id.toString(),
-      });
-    }
-
     // Check password
     if (!user.password) {
       return res.status(400).json({
@@ -366,6 +358,14 @@ export const login = async (req, res) => {
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       return res.status(400).json({ error: AUTH_MESSAGES.WRONG_PASSWORD });
+    }
+
+    if (user.emailVerified !== true) {
+      console.log(`[auth][login] BLOCKED unverified email=${normalizedEmail} userId=${user._id}`);
+      return res.status(400).json({
+        error: AUTH_MESSAGES.EMAIL_NOT_VERIFIED,
+        userId: user._id.toString(),
+      });
     }
 
     const token = generateToken(user._id);

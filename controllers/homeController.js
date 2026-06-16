@@ -37,12 +37,15 @@ export const getHomeDashboard = async (req, res) => {
     const user = await User.findById(userId).select('firstName weight coachProfile');
     const mealPlan = await MealPlan.findOne({ userId, isActive: true }).sort({ createdAt: -1 });
 
-    const calorieTarget = mealPlan?.dailyCalorieTarget || 2000;
     const macroTargets = mealPlan?.dailyMacroTargets || { protein: 120, carbs: 150, fat: 65 };
+    // Water target must only change when the meal plan changes (regeneration),
+    // never just because the user's weight was logged. Use the plan's stored
+    // value; fall back to a fixed default (not a live recalculation from
+    // current weight) for legacy plans that predate this field.
     const planWaterLitres = Number(mealPlan?.waterTargetLitres);
     const estimatedWaterLitres = Number.isFinite(planWaterLitres) && planWaterLitres > 0
       ? Math.round(planWaterLitres)
-      : Math.max(2, Math.min(5, Math.round(((Number(user?.weight) || 70) * 35) / 1000)));
+      : 3;
     const waterTargetMl = estimatedWaterLitres * 1000;
 
     const foodLogs = await FoodLog.find({ userId, ...dayFilter }).lean();
@@ -57,11 +60,17 @@ export const getHomeDashboard = async (req, res) => {
     }
     const waterMl = waterLogs.reduce((s, l) => s + (l.amountMl || 0), 0);
 
+    // Calendar-day diff from the plan's startDate (client-local "today" vs
+    // the client-local day the plan started on) — NOT elapsed milliseconds
+    // since createdAt, which drifts a day off whenever the user is in a
+    // timezone ahead of the server and generates/opens the app near midnight.
     const todayDayNumber = mealPlan?.days?.length
-      ? Math.min(
-          Math.floor((Date.now() - new Date(mealPlan.createdAt).getTime()) / 86400000) + 1,
-          mealPlan.days.length
-        )
+      ? (() => {
+          const todayStart = clientRange ? clientRange.start : today;
+          const planStart = new Date(mealPlan.startDate);
+          const diffDays = Math.round((todayStart.getTime() - planStart.getTime()) / 86400000);
+          return Math.min(Math.max(diffDays + 1, 1), mealPlan.days.length);
+        })()
       : 1;
 
     const todayPlanDay = mealPlan?.days?.find((d) => d.dayNumber === todayDayNumber)
@@ -97,13 +106,11 @@ export const getHomeDashboard = async (req, res) => {
       };
     });
 
-    // Protein target = sum of protein in today's planned meals (more accurate than stored dailyMacroTargets)
-    const planProteinTarget = (todayPlanDay?.meals || []).reduce(
-      (sum, m) => sum + (Number(m.macros?.protein) || 0), 0
-    );
-    const effectiveProteinTarget = planProteinTarget > 0
-      ? Math.round(planProteinTarget)
-      : (macroTargets.protein || 120);
+    // Targets come from the original generated plan and must not move when Diet Rescue rewrites meals.
+    const effectiveProteinTarget = Math.round(Number(macroTargets.protein) || 120);
+
+    // Keep the calorie target pinned to the generated plan's daily target.
+    const calorieTarget = Math.round(Number(mealPlan?.dailyCalorieTarget) || 1820);
 
     // Append extra food logs (not from meal plan) as additional meal entries
     const extraFoodLogs = foodLogs.filter((l) => l.source !== 'meal_plan');

@@ -8,6 +8,9 @@ const router = express.Router();
 // Generate a 7-day meal plan
 router.post('/generate', authenticate, mealPlanController.generateMealPlan);
 
+// Regenerate only today's remaining meals and future days after questionnaire updates
+router.post('/regenerate-remaining', authenticate, mealPlanController.regenerateRemainingMealPlan);
+
 // "Can I eat this?" food checker
 router.post('/check-food', authenticate, [
   body('food').trim().notEmpty().isLength({ max: 500 }),

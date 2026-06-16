@@ -30,7 +30,7 @@ function getOpenAI() {
 // - user.budget, cookingTime (lifestyle preferences)
 // - user.activityLevel, height, weight (physical info)
 // ---------------------------------------------------------------------------
-function buildDiabeticContext(user) {
+function buildWelloraContext(user) {
   const dietStyle = [
     user.dietPreferences?.vegetarian ? 'Vegetarian' : null,
     user.dietPreferences?.vegan ? 'Vegan' : null,
@@ -61,13 +61,13 @@ function buildDiabeticContext(user) {
   const mealManagement = coachProfile.mealManagement || 'Not specified';
   const challenges = (coachProfile.weightLossProblems || []).join(', ') || 'None reported';
 
-  return `USER HEALTH & DIET PROFILE
+  return `WELLORA USER DIET PROFILE
 - Main Goal: ${mainGoal}
 - Age: ${age} | Height: ${user.height?.cm || 'Not recorded'} cm | Weight: ${user.weight || 'Not recorded'} kg | Target: ${targetWeight} kg
-- Diabetes status: ${user.diabetesType || 'Not specified'}
-- Other health conditions: ${healthConditions}
-- Latest fasting blood sugar: ${user.fastingSugar != null ? user.fastingSugar + ' mg/dL' : 'Not recorded'}
-- Latest HbA1c: ${user.hba1c != null ? user.hba1c + ' %' : 'Not recorded'}
+- Health goal/context: ${user.diabetesType || 'General diet and wellness'}
+- Health conditions to consider: ${healthConditions}
+- Fasting blood sugar, if provided: ${user.fastingSugar != null ? user.fastingSugar + ' mg/dL' : 'Not recorded'}
+- HbA1c, if provided: ${user.hba1c != null ? user.hba1c + ' %' : 'Not recorded'}
 - Medications & timing: ${meds}
 - Activity level: ${user.activityLevel || 'Not specified'}
 - Weight loss pace: ${pace}
@@ -139,7 +139,7 @@ function buildMealCalorieLines(mealTypes, dailyCalorieTarget) {
 
 function buildMealJsonSchema(mealTypes) {
   return mealTypes.map(t =>
-    `  {"mealType":"${t}","name":"...","description":"Why this is blood-sugar friendly (2-3 sentences)","portionGuide":"...","sugarImpact":"Low","calories":0,"macros":{"carbs":0,"protein":0,"fat":0},"tags":["Low GI","Diabetes-friendly"],"ingredients":["..."]}`
+    `  {"mealType":"${t}","name":"...","description":"Why this meal supports the user's diet goal (2-3 sentences)","portionGuide":"...","sugarImpact":"Low","calories":0,"macros":{"carbs":0,"protein":0,"fat":0},"tags":["Balanced","Goal-friendly"],"ingredients":["..."]}`
   ).join(',\n');
 }
 
@@ -153,23 +153,25 @@ function normalizeWaterTargetLitres(value, fallback = 3) {
   return Math.max(2, Math.min(5, Math.round(litres)));
 }
 
-const DIABETIC_SYSTEM_PROMPT = `You are a certified nutrition coach for the "AI Diet Coach" app.
-You specialise in blood sugar control, low glycaemic index (low-GI) eating, and culturally appropriate health-conscious meals — especially South Asian / Pakistani / Indian foods (roti, rice, daal, salan, qeema, biryani, fruits).
+const WELLORA_SYSTEM_PROMPT = `You are Wellora Health's AI nutrition coach for a diet, meal-planning, food logging, and healthy-habit app.
+You help users follow realistic nutrition plans for goals such as weight loss, fat loss, muscle gain, maintenance, better energy, healthier eating, and condition-aware wellness.
+You specialise in practical, culturally appropriate meals, especially South Asian / Pakistani / Indian foods (roti, rice, daal, salan, qeema, biryani, fruits), while adapting to any cuisine the user prefers.
 Core principles you ALWAYS apply:
-1. Prioritise low-GI, high-fibre carbs. Limit refined sugar and white-flour foods.
-2. Show clear PORTIONS in everyday units: "½ roti", "1 roti", "½ cup cooked rice", "1 small fruit", "1 cup daal".
-3. Pair carbs with protein, fibre, or healthy fat to slow glucose spikes.
-4. Respect cultural foods, the user's budget and cooking time.
-5. Flag anything that may spike blood sugar (white sugar, sugary drinks, mithai, white rice in large portions, fruit juice, etc.).
-6. Never replace medical advice — remind the user to consult their doctor for medication changes.
+1. Personalise advice to the user's goal, calorie target, macro targets, preferences, allergies, budget, cooking time, and routine.
+2. Keep meals realistic, filling, high in protein when appropriate, rich in fibre, and portion-controlled.
+3. Show clear portions in everyday units: "1/2 roti", "1 roti", "1/2 cup cooked rice", "1 small fruit", "1 cup daal".
+4. Respect cultural foods instead of forcing generic diet foods.
+5. Avoid extreme restriction, crash diets, unsafe fasting, or shaming language.
+6. Consider health conditions and medications when provided, but never replace medical advice.
+7. For users with health conditions or sugar concerns, include condition-aware guidance; otherwise keep the answer focused on the user's diet goal.
 Return ONLY valid JSON when a JSON schema is requested. No markdown, no extra commentary.`;
 
 // ---------------------------------------------------------------------------
-// 1) Daily / weekly diabetic meal plan
+// 1) Daily / weekly Wellora meal plan
 // ---------------------------------------------------------------------------
 
 /**
- * Generate a single day's meal plan optimised for diabetic users.
+ * Generate a single day's meal plan optimised for the user's Wellora goals.
  */
 export async function generateMealPlanDayWithAI(user, dailyCalorieTarget, dailyMacroTargets, dayNumber) {
   const openai = getOpenAI();
@@ -177,27 +179,28 @@ export async function generateMealPlanDayWithAI(user, dailyCalorieTarget, dailyM
   const timeout = 15000;
 
   try {
-    const context = buildDiabeticContext(user);
+    const context = buildWelloraContext(user);
     const routineConfig = getMealRoutineConfig(user);
     const calorieLines = buildMealCalorieLines(routineConfig.mealTypes, dailyCalorieTarget);
     const mealSchema = buildMealJsonSchema(routineConfig.mealTypes);
 
     const prompt = `${context}
 
-Generate Day ${dayNumber} of a 7-day DIABETIC meal plan.
+Generate Day ${dayNumber} of a 7-day WELLORA HEALTH diet plan.
 MEAL ROUTINE: ${routineConfig.instruction}
 Expected meal count: ${routineConfig.count} meals — exactly [${routineConfig.mealTypes.join(', ')}].
 Calorie targets:
 ${calorieLines}
 
-Macro targets per day: Carbs ${dailyMacroTargets.carbs}g (prefer complex carbs / low-GI), Protein ${dailyMacroTargets.protein}g, Fat ${dailyMacroTargets.fat}g.
+Macro targets per day: Carbs ${dailyMacroTargets.carbs}g, Protein ${dailyMacroTargets.protein}g, Fat ${dailyMacroTargets.fat}g.
 
 RULES:
 - Use the user's local foods, likes, budget and cooking time wherever possible.
 - Each meal MUST include a clear "portionGuide" in everyday units (e.g. "1 roti + ½ cup daal + salad", "½ cup cooked basmati rice + chicken salan").
-- Each meal MUST include a "sugarImpact" tag: one of "Low", "Moderate", "Watch".
-- Avoid white sugar, sugary drinks, fruit juice, sweets / mithai, and large portions of white rice.
-- Description should explain WHY this meal is good for blood sugar (2-3 sentences).
+- Each meal MUST support the user's main goal and stay near the calorie/macro target.
+- Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
+- Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
+- Description should explain WHY this meal supports the user's goal (2-3 sentences).
 - Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
 
 Return JSON only — the meals array MUST have exactly ${routineConfig.count} entries:
@@ -208,7 +211,7 @@ ${mealSchema}
     const responsePromise = openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: DIABETIC_SYSTEM_PROMPT },
+        { role: 'system', content: WELLORA_SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
       temperature: 0.8,
@@ -265,7 +268,7 @@ ${mealSchema}
 }
 
 /**
- * Generate the full 7-day diabetic meal plan in one OpenAI call.
+ * Generate the full 7-day Wellora meal plan in one OpenAI call.
  */
 export async function generateMealPlanWithAI(user, dailyCalorieTarget, dailyMacroTargets) {
   const openai = getOpenAI();
@@ -273,27 +276,28 @@ export async function generateMealPlanWithAI(user, dailyCalorieTarget, dailyMacr
   const timeout = 35000;
 
   try {
-    const context = buildDiabeticContext(user);
+    const context = buildWelloraContext(user);
     const routineConfig = getMealRoutineConfig(user);
     const calorieLines = buildMealCalorieLines(routineConfig.mealTypes, dailyCalorieTarget);
     const mealSchema = buildMealJsonSchema(routineConfig.mealTypes);
 
     const prompt = `${context}
 
-Generate a 7-DAY diabetic-safe meal plan.
+Generate a 7-DAY Wellora Health diet plan.
 MEAL ROUTINE: ${routineConfig.instruction}
 Each day's meals array MUST have exactly ${routineConfig.count} entries — [${routineConfig.mealTypes.join(', ')}]. No other meal types.
 Calorie targets per day:
 ${calorieLines}
 
-Macro targets per day: Carbs ${dailyMacroTargets.carbs}g (LOW-GI), Protein ${dailyMacroTargets.protein}g, Fat ${dailyMacroTargets.fat}g.
+Macro targets per day: Carbs ${dailyMacroTargets.carbs}g, Protein ${dailyMacroTargets.protein}g, Fat ${dailyMacroTargets.fat}g.
 
 REQUIREMENTS:
 - Use the user's local foods, likes, budget and cooking time wherever possible.
 - Vary meals across the 7 days (no exact repeats).
 - Each meal MUST include "portionGuide" in everyday units (e.g. "1 roti + ½ cup daal + salad", "½ cup cooked basmati rice + chicken salan").
-- Each meal MUST include a "sugarImpact" tag: "Low" | "Moderate" | "Watch".
-- Avoid white sugar, sugary drinks, mithai, fruit juice and large portions of white rice.
+- Each meal MUST support the user's main goal and stay near the calorie/macro target.
+- Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
+- Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
 - Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
 
 Return JSON only — each day's meals array MUST have exactly ${routineConfig.count} entries:
@@ -304,7 +308,7 @@ ${mealSchema}
     const responsePromise = openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: DIABETIC_SYSTEM_PROMPT },
+        { role: 'system', content: WELLORA_SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
       temperature: 0.8,
@@ -362,7 +366,7 @@ ${mealSchema}
 // ---------------------------------------------------------------------------
 
 /**
- * Decide whether a specific food/dish is safe for the diabetic user.
+ * Decide whether a specific food/dish fits the user's diet goal.
  */
 export async function checkFoodSafetyWithAI(user, foodName, portion = '') {
   const openai = getOpenAI();
@@ -370,19 +374,19 @@ export async function checkFoodSafetyWithAI(user, foodName, portion = '') {
   const timeout = 12000;
 
   try {
-    const context = buildDiabeticContext(user);
+    const context = buildWelloraContext(user);
 
     const prompt = `${context}
 
 The user is asking: "Can I eat ${foodName}${portion ? ' (' + portion + ')' : ''}?"
 
-Decide based on the user's diabetes status, latest sugar / HbA1c, medications, allergies and diet style.
+Decide based on the user's main goal, calorie/macro targets, health conditions, medications, allergies, preferences and diet style.
 
 Return JSON only:
 {
-  "verdict": "Safe" | "Eat with care" | "Avoid",
+  "verdict": "Fits your plan" | "Have with care" | "Limit/avoid",
   "reason": "Short 1-2 sentence reason in plain language.",
-  "safePortion": "Specific portion the user MAY eat, e.g. '½ cup cooked rice with daal & salad' or 'Up to 1 small apple after meal'",
+  "safePortion": "Specific goal-friendly portion the user may eat, e.g. '1 roti with lean protein and salad' or '1 small serving after a balanced meal'",
   "sugarImpact": "Low" | "Moderate" | "Watch",
   "betterAlternatives": ["alt 1", "alt 2", "alt 3"],
   "tips": ["practical tip 1", "tip 2"]
@@ -391,7 +395,7 @@ Return JSON only:
     const responsePromise = openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: DIABETIC_SYSTEM_PROMPT },
+        { role: 'system', content: WELLORA_SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
       temperature: 0.5,
@@ -410,12 +414,13 @@ Return JSON only:
       const jsonString = jsonMatch ? jsonMatch[1] : content;
       const parsed = JSON.parse(jsonString);
       return {
-        verdict: parsed.verdict || 'Eat with care',
+        verdict: parsed.verdict || 'Have with care',
         reason: parsed.reason || '',
         safePortion: parsed.safePortion || '',
         sugarImpact: parsed.sugarImpact || 'Moderate',
         betterAlternatives: Array.isArray(parsed.betterAlternatives) ? parsed.betterAlternatives : [],
         tips: Array.isArray(parsed.tips) ? parsed.tips : [],
+        usage: response.usage || null,
       };
     } catch (parseError) {
       console.error('checkFoodSafetyWithAI parse error:', parseError);
@@ -428,11 +433,11 @@ Return JSON only:
 }
 
 // ---------------------------------------------------------------------------
-// 3) Sugar-safe food swaps
+// 3) Smart meal swaps
 // ---------------------------------------------------------------------------
 
 /**
- * Suggest sugar-safe swaps for a food / craving.
+ * Suggest goal-friendly smart meal swaps for a food / craving.
  */
 export async function generateFoodSwapsWithAI(user, foodName) {
   const openai = getOpenAI();
@@ -440,11 +445,11 @@ export async function generateFoodSwapsWithAI(user, foodName) {
   const timeout = 12000;
 
   try {
-    const context = buildDiabeticContext(user);
+    const context = buildWelloraContext(user);
 
     const prompt = `${context}
 
-Suggest 4 SUGAR-SAFE swaps for: "${foodName}".
+Suggest 4 SMART MEAL SWAPS for: "${foodName}".
 Each swap must be culturally appropriate (use roti, rice, daal, salan, qeema, biryani, fruits etc. when relevant), affordable for the user's budget and quick to prepare.
 
 Return JSON only:
@@ -455,7 +460,7 @@ Return JSON only:
       "swap": "name of the swap",
       "portion": "everyday-unit portion, e.g. '1 roti + ½ cup daal'",
       "sugarImpact": "Low" | "Moderate",
-      "why": "1 sentence why this is better for blood sugar"
+      "why": "1 sentence why this better supports the user's goal"
     }
   ]
 }`;
@@ -463,7 +468,7 @@ Return JSON only:
     const responsePromise = openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: DIABETIC_SYSTEM_PROMPT },
+        { role: 'system', content: WELLORA_SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
       temperature: 0.7,
@@ -481,7 +486,10 @@ Return JSON only:
     const jsonString = jsonMatch ? jsonMatch[1] : content;
     const parsed = JSON.parse(jsonString);
 
-    return Array.isArray(parsed.swaps) ? parsed.swaps : [];
+    return {
+      swaps: Array.isArray(parsed.swaps) ? parsed.swaps : [],
+      usage: response.usage || null,
+    };
   } catch (error) {
     console.error('generateFoodSwapsWithAI error:', error.message);
     throw error;
@@ -493,7 +501,7 @@ Return JSON only:
 // ---------------------------------------------------------------------------
 
 /**
- * Build a sugar-safe weekly grocery list based on the user's profile (and an
+ * Build a weekly grocery list based on the user's profile (and an
  * optional list of meal names already planned).
  */
 export async function generateGroceryListWithAI(user, plannedMeals = []) {
@@ -502,44 +510,41 @@ export async function generateGroceryListWithAI(user, plannedMeals = []) {
   const timeout = 15000;
 
   try {
-    const context = buildDiabeticContext(user);
+    const context = buildWelloraContext(user);
     const mealsHint = plannedMeals.length
       ? `Planned meals this week: ${plannedMeals.slice(0, 28).join('; ')}.`
-      : 'No specific meals planned yet — assume a typical diabetic-friendly week.';
+      : 'No specific meals planned yet - assume a typical balanced Wellora Health week.';
 
     const prompt = `${context}
 
-Build a WEEKLY GROCERY LIST that is diabetic-safe, culturally appropriate (South Asian / Pakistani / Indian friendly) and matches the user's budget & cooking time.
+Build a WEEKLY GROCERY LIST that is goal-friendly, culturally appropriate (South Asian / Pakistani / Indian friendly) and matches the user's budget & cooking time.
 ${mealsHint}
 
-Group items by category. Use everyday units (kg, g, packs, pieces, dozen, cups).
-If planned meals are provided, include ONLY ingredients required by those planned meals and portion guides. Do not add extra healthy staples, snacks, fruits, or pantry items unless they are clearly needed for the listed meals.
-Combine duplicate ingredients across the week and estimate conservative quantities for one person.
-Avoid: white sugar, soft drinks, fruit juice, sweets / mithai, full-cream sweetened products.
+STRICT RULES:
+1. If planned meals are provided, derive every item STRICTLY from the ingredients those specific meals and portion guides require. There is no fixed list of categories to fill in — do not include a category or item that isn't needed for the listed meals.
+2. Do NOT add extra healthy staples, snacks, fruits, pantry items, or "just in case" ingredients unless a listed meal actually calls for them.
+3. Combine duplicate ingredients across the whole week into ONE line with a single total quantity (e.g. if 3 meals use onion, output one "Onion" line sized for all 3, not 3 separate onion lines).
+4. Estimate conservative, realistic quantities for ONE person for the week — do not round up generously or pad quantities.
+5. Use everyday units (kg, g, packs, pieces, dozen, cups).
+6. Only include the "avoid" list if there are real allergy/restriction conflicts to flag; otherwise return an empty array.
 
-Return JSON only:
+Return JSON only, with only as many categories as are actually needed (omit any category with no items):
 {
   "categories": [
     {
       "name": "Vegetables",
       "items": [
-        { "name": "Spinach", "quantity": "500 g", "note": "for daal palak, optional" }
+        { "name": "Spinach", "quantity": "500 g", "note": "for daal palak" }
       ]
-    },
-    { "name": "Fruits (low sugar)", "items": [...] },
-    { "name": "Grains & Pulses", "items": [...] },
-    { "name": "Protein", "items": [...] },
-    { "name": "Dairy & Eggs", "items": [...] },
-    { "name": "Pantry / Spices", "items": [...] },
-    { "name": "Snacks (diabetic-safe)", "items": [...] }
+    }
   ],
-  "avoid": ["item 1", "item 2"]
+  "avoid": []
 }`;
 
     const responsePromise = openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: DIABETIC_SYSTEM_PROMPT },
+        { role: 'system', content: WELLORA_SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
       temperature: 0.6,
@@ -560,6 +565,7 @@ Return JSON only:
     return {
       categories: Array.isArray(parsed.categories) ? parsed.categories : [],
       avoid: Array.isArray(parsed.avoid) ? parsed.avoid : [],
+      usage: response.usage || null,
     };
   } catch (error) {
     console.error('generateGroceryListWithAI error:', error.message);
@@ -568,7 +574,7 @@ Return JSON only:
 }
 
 // ---------------------------------------------------------------------------
-// 5) Care AI chat (diabetes-focused)
+// 5) Wellora AI chat coach
 // ---------------------------------------------------------------------------
 
 export async function generateChatResponse(userMessage, user, chatHistory = []) {
@@ -579,14 +585,14 @@ export async function generateChatResponse(userMessage, user, chatHistory = []) 
   }
 
   try {
-    const context = buildDiabeticContext(user);
+    const context = buildWelloraContext(user);
 
-    const systemPrompt = `${DIABETIC_SYSTEM_PROMPT}
+    const systemPrompt = `${WELLORA_SYSTEM_PROMPT}
 
 You are chatting with the user inside the app. Be empathetic, short (2-3 short paragraphs max) and practical.
-When asked "can I eat X" always give: verdict (Safe / With care / Avoid), a safe portion, and a quick reason about blood sugar.
-When the user is upset about a high reading, calm them first, then give 1-2 concrete next steps.
-Never replace doctor's advice. Mention consulting the doctor for any medication change or for HbA1c above 9 %.
+When asked "can I eat X" always give: verdict (Fits your plan / Have with care / Limit or avoid), a goal-friendly portion, and a quick reason tied to calories, protein, fibre, and the user's goal.
+When the user feels discouraged after overeating, missing a meal, weight changes, or low motivation, calm them first, then give 1-2 concrete next steps.
+Never replace medical advice. Mention consulting a doctor or dietitian for medical conditions, medication changes, pregnancy, eating-disorder concerns, or very aggressive weight goals.
 
 ${context}`;
 
@@ -614,7 +620,7 @@ ${context}`;
 
     if (lowerMessage.includes('sugar') || lowerMessage.includes('glucose') ||
         lowerMessage.includes('hba1c') || lowerMessage.includes('diabetes')) {
-      responseType = 'blood_sugar';
+      responseType = 'health_context';
       confidence = 0.92;
     } else if (lowerMessage.includes('eat') || lowerMessage.includes('can i have') ||
                lowerMessage.includes('food') || lowerMessage.includes('meal') ||

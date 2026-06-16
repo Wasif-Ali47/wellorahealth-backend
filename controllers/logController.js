@@ -11,6 +11,7 @@ import {
   formatFoodLogForHistory,
   formatWaterLogForHistory
 } from '../utils/foodLogHelpers.js';
+import { recordOpenAiUsage } from '../utils/trackUsage.js';
 
 function plannedMealKey(mealType, foodName) {
   return `${mealType || 'Snack'}::${String(foodName || '').trim().toLowerCase()}`;
@@ -92,7 +93,10 @@ export const logNatural = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Text is required' });
     }
 
-    const { entries, source: parseSource } = await parseNaturalLog(text.trim(), category);
+    const { entries, source: parseSource, usage } = await parseNaturalLog(text.trim(), category);
+    if (parseSource === 'openai') {
+      recordOpenAiUsage(req.userId, usage, 'natural-log', 'gpt-4o-mini').catch(() => {});
+    }
     if (!entries?.length) {
       return res.status(400).json({
         success: false,
@@ -208,7 +212,15 @@ export const logPlannedMeal = async (req, res) => {
   }
 };
 
-/** DELETE /api/logs/planned-meal/:id — undo planned meal completion/skip */
+/**
+ * DELETE /api/logs/planned-meal/:id — undo planned meal completion/skip,
+ * OR remove an extra (non-plan) food log. Both planned-meal logs and extra
+ * food logs are FoodLog documents, distinguished by `source`; the `:id`
+ * always identifies the FoodLog directly so both cases are handled by
+ * deleting on `_id` (ownership-scoped to req.userId). The `plannedMealKey`
+ * fallback only applies to planned-meal logs, which is the only source that
+ * sets that field.
+ */
 export const undoPlannedMeal = async (req, res) => {
   try {
     const { plannedMealKey: fallbackKey } = req.body || {};
@@ -217,7 +229,7 @@ export const undoPlannedMeal = async (req, res) => {
       filters.push({ _id: req.params.id });
     }
     if (fallbackKey) {
-      filters.push({ plannedMealKey: fallbackKey });
+      filters.push({ source: 'meal_plan', plannedMealKey: fallbackKey });
     }
     if (filters.length === 0) {
       return res.status(400).json({ success: false, message: 'Meal log id is required' });
@@ -225,11 +237,10 @@ export const undoPlannedMeal = async (req, res) => {
 
     const deleted = await FoodLog.findOneAndDelete({
       userId: req.userId,
-      source: 'meal_plan',
       $or: filters,
     });
     if (!deleted) {
-      return res.status(404).json({ success: false, message: 'Planned meal log not found' });
+      return res.status(404).json({ success: false, message: 'Meal log not found' });
     }
     res.json({ success: true, message: 'Meal status undone' });
   } catch (error) {

@@ -86,36 +86,49 @@ export async function sendOTPEmail(email, otp) {
 
   console.log(`[auth][otp] Sending via smtp.gmail.com:587 from=${user} to=${to} ...`);
 
-  try {
-    const transporter = createSmtpTransporter();
-    const info = await transporter.sendMail({
-      from: `"Wellora Health" <${user}>`,
-      to,
-      subject,
-      text,
-      html,
-    });
+  // Gmail SMTP can intermittently drop/refuse a connection (transient
+  // network blip, brief throttling). Retry once after a short delay before
+  // giving up — this is the difference between "Verify now" working and a
+  // one-off hiccup surfacing as "failed to send OTP" to the user.
+  const maxAttempts = 2;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const transporter = createSmtpTransporter();
+      const info = await transporter.sendMail({
+        from: `"Wellora Health" <${user}>`,
+        to,
+        subject,
+        text,
+        html,
+      });
 
-    console.log(
-      `[auth][otp] ✅ EMAIL SENT SUCCESS to=${to} messageId=${info.messageId ?? 'n/a'}`
-    );
-    console.log(`[auth][otp] SMTP response: ${info.response ?? 'n/a'}`);
-    if (isDev) {
-      console.log(`[auth][otp] (dev) OTP code was: ${code}`);
+      console.log(
+        `[auth][otp] ✅ EMAIL SENT SUCCESS to=${to} attempt=${attempt} messageId=${info.messageId ?? 'n/a'}`
+      );
+      console.log(`[auth][otp] SMTP response: ${info.response ?? 'n/a'}`);
+      if (isDev) {
+        console.log(`[auth][otp] (dev) OTP code was: ${code}`);
+      }
+      console.log('────────────────────────────────────────');
+      return info;
+    } catch (err) {
+      lastErr = err;
+      console.error(`[auth][otp] ❌ EMAIL SEND FAILED to=${to} attempt=${attempt}/${maxAttempts}`);
+      console.error(`[auth][otp] error message: ${err?.message || err}`);
+      if (err?.code) console.error(`[auth][otp] error code: ${err.code}`);
+      if (err?.response) console.error(`[auth][otp] SMTP response: ${err.response}`);
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
     }
-    console.log('────────────────────────────────────────');
-    return info;
-  } catch (err) {
-    console.error(`[auth][otp] ❌ EMAIL SEND FAILED to=${to}`);
-    console.error(`[auth][otp] error message: ${err?.message || err}`);
-    if (err?.code) console.error(`[auth][otp] error code: ${err.code}`);
-    if (err?.response) console.error(`[auth][otp] SMTP response: ${err.response}`);
-    if (isDev) {
-      console.error(`[auth][otp] (dev) OTP would have been: ${code}`);
-    }
-    console.log('────────────────────────────────────────');
-    throw err;
   }
+
+  if (isDev) {
+    console.error(`[auth][otp] (dev) OTP would have been: ${code}`);
+  }
+  console.log('────────────────────────────────────────');
+  throw lastErr;
 }
 
 export async function sendEmail(email, subject, text) {

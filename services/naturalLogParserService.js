@@ -170,7 +170,7 @@ export async function parseNaturalLog(text, category = 'auto') {
     const raw = response.choices[0]?.message?.content;
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed.entries) && parsed.entries.length > 0) {
-      return { entries: parsed.entries, source: 'openai' };
+      return { entries: parsed.entries, source: 'openai', usage: response.usage || null };
     }
     return parseWithHeuristics(text, category);
   } catch (err) {

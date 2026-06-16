@@ -9,6 +9,8 @@ import {
   generateFoodSwapsWithAI,
   generateGroceryListWithAI
 } from '../services/openaiService.js';
+import { buildClientDayRange } from '../utils/foodLogHelpers.js';
+import { recordOpenAiUsage } from '../utils/trackUsage.js';
 
 /**
  * Calculate daily calorie target
@@ -117,8 +119,20 @@ export const generateMealPlan = async (req, res) => {
     const expectedMealCount = expectedMealCountForUser(user);
     console.log(`[generateMealPlan] User profile loaded. Calorie target: ${dailyCalorieTarget}kcal`);
 
-    const startDate = new Date();
-    startDate.setHours(0, 0, 0, 0);
+    // Anchor day 1 to the client's local calendar date, not the server's —
+    // otherwise a plan generated late at night in a timezone ahead of the
+    // server's clock lands on "yesterday" and day 1 is already in the past.
+    const clientRange = buildClientDayRange({
+      today: true,
+      timezoneOffset: req.body?.timezoneOffset,
+    });
+    const startDate = clientRange
+      ? clientRange.start
+      : (() => {
+          const d = new Date();
+          d.setHours(0, 0, 0, 0);
+          return d;
+        })();
     const endDate = new Date(startDate);
     endDate.setDate(endDate.getDate() + (requestedDays - 1));
 
@@ -138,6 +152,7 @@ export const generateMealPlan = async (req, res) => {
           dailyMacroTargets,
           1
         );
+        recordOpenAiUsage(req.userId, result?.usage, 'meal-plan-day', 'gpt-4o-mini').catch(() => {});
         aiDays = [{ meals: result?.meals || [] }];
         if (result?.waterTargetLitres) waterTargetLitres = result.waterTargetLitres;
       } catch (err) {
@@ -149,6 +164,7 @@ export const generateMealPlan = async (req, res) => {
       try {
         console.log('[generateMealPlan] Attempting to generate full 7-day plan in one API call...');
         const result = await generateMealPlanWithAI(user, dailyCalorieTarget, dailyMacroTargets);
+        recordOpenAiUsage(req.userId, result?.usage, 'meal-plan', 'gpt-4o-mini').catch(() => {});
         if (result?.waterTargetLitres) waterTargetLitres = result.waterTargetLitres;
 
         if (result?.days && Array.isArray(result.days) && result.days.length >= 7) {
@@ -178,6 +194,9 @@ export const generateMealPlan = async (req, res) => {
         }
 
         const dayResults = await Promise.all(dayPromises);
+        dayResults.forEach((result) => {
+          recordOpenAiUsage(req.userId, result?.usage, 'meal-plan-day', 'gpt-4o-mini').catch(() => {});
+        });
         const firstWaterTarget = dayResults.find((result) => result?.waterTargetLitres)?.waterTargetLitres;
         if (firstWaterTarget) waterTargetLitres = firstWaterTarget;
 
@@ -268,6 +287,145 @@ export const generateMealPlan = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to generate meal plan",
+      error: error.message,
+    });
+  }
+};
+
+export const regenerateRemainingMealPlan = async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const activePlan = await MealPlan.findOne({ userId: req.userId, isActive: true }).sort({ createdAt: -1 });
+    if (!activePlan) {
+      return res.status(404).json({ success: false, message: 'Meal plan not found' });
+    }
+
+    const clientRange = buildClientDayRange({
+      today: true,
+      timezoneOffset: req.body?.timezoneOffset,
+    });
+    const todayStart = clientRange?.start || (() => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d;
+    })();
+    const tomorrowStart = clientRange?.end || (() => {
+      const d = new Date(todayStart);
+      d.setDate(d.getDate() + 1);
+      return d;
+    })();
+
+    const planStart = new Date(activePlan.startDate);
+    const dayIndex = Math.min(
+      Math.max(Math.round((todayStart.getTime() - planStart.getTime()) / 86400000), 0),
+      Math.max((activePlan.days?.length || 1) - 1, 0)
+    );
+    const remainingDays = (activePlan.days || []).slice(dayIndex);
+    if (remainingDays.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No remaining plan days to update.',
+        mealPlan: activePlan,
+        updatedDays: 0,
+      });
+    }
+
+    const dailyCalorieTarget = calculateCalorieTarget(user);
+    const dailyMacroTargets = calculateMacroTargets(dailyCalorieTarget);
+    const expectedMealCount = expectedMealCountForUser(user);
+    const todayLogs = await FoodLog.find({
+      userId: req.userId,
+      $or: [
+        { date: { $gte: todayStart, $lt: tomorrowStart } },
+        { timestamp: { $gte: todayStart, $lt: tomorrowStart } },
+      ],
+      source: 'meal_plan',
+      status: { $in: ['completed', 'skipped'] },
+      plannedMealKey: { $exists: true, $ne: null },
+    }).lean();
+    const lockedTodayKeys = new Set(todayLogs.map((log) => String(log.plannedMealKey)));
+
+    const dayResults = await Promise.all(
+      remainingDays.map((day) =>
+        generateMealPlanDayWithAI(user, dailyCalorieTarget, dailyMacroTargets, day.dayNumber)
+          .catch((err) => {
+            console.warn(`[regenerateRemainingMealPlan] Day ${day.dayNumber} AI generation failed, using fallback:`, err.message);
+            return null;
+          })
+      )
+    );
+    dayResults.forEach((result) => {
+      recordOpenAiUsage(req.userId, result?.usage, 'meal-plan-day', 'gpt-4o-mini').catch(() => {});
+    });
+
+    for (let i = 0; i < remainingDays.length; i++) {
+      const day = remainingDays[i];
+      let newMeals = dayResults[i]?.meals || [];
+      const hasValidMeals =
+        Array.isArray(newMeals) &&
+        newMeals.length >= expectedMealCount &&
+        newMeals.every((m) => m?.name && m?.mealType && Number(m.calories) > 0);
+
+      if (!hasValidMeals) {
+        newMeals = getFallbackMeals((day.dayNumber || (dayIndex + i + 1)) - 1, dailyCalorieTarget)
+          .slice(0, expectedMealCount);
+      }
+
+      newMeals = newMeals.map((m) => ({
+        ...m,
+        portionGuide: m.portionGuide || '',
+        sugarImpact: m.sugarImpact || 'Low',
+      }));
+
+      if (i === 0 && lockedTodayKeys.size > 0) {
+        const replacementsByType = new Map(
+          newMeals.map((meal) => [String(meal.mealType || '').toLowerCase(), meal])
+        );
+        day.meals = (day.meals || []).map((meal) => {
+          const key = `${meal.mealType || 'Snack'}::${String(meal.name || '').trim().toLowerCase()}`;
+          if (lockedTodayKeys.has(key)) return meal;
+          return replacementsByType.get(String(meal.mealType || '').toLowerCase()) || meal;
+        });
+      } else {
+        day.meals = newMeals;
+      }
+
+      day.totalCalories = (day.meals || []).reduce((sum, meal) => sum + (Number(meal.calories) || 0), 0);
+      day.totalMacros = (day.meals || []).reduce(
+        (sum, meal) => ({
+          carbs: sum.carbs + (Number(meal.macros?.carbs) || 0),
+          protein: sum.protein + (Number(meal.macros?.protein) || 0),
+          fat: sum.fat + (Number(meal.macros?.fat) || 0),
+        }),
+        { carbs: 0, protein: 0, fat: 0 }
+      );
+    }
+
+    activePlan.dailyCalorieTarget = dailyCalorieTarget;
+    activePlan.dailyMacroTargets = dailyMacroTargets;
+    activePlan.groceryList = null;
+    activePlan.groceryListGeneratedAt = null;
+    activePlan.markModified('days');
+    await activePlan.save();
+
+    const totalTime = Date.now() - startTime;
+    console.log(`[regenerateRemainingMealPlan] Updated ${remainingDays.length} remaining day(s) in ${totalTime}ms`);
+
+    return res.json({
+      success: true,
+      message: `Updated ${remainingDays.length} remaining plan day${remainingDays.length === 1 ? '' : 's'} with your new questionnaire answers.`,
+      mealPlan: activePlan,
+      updatedDays: remainingDays.length,
+    });
+  } catch (error) {
+    const totalTime = Date.now() - startTime;
+    console.error(`[regenerateRemainingMealPlan] Error after ${totalTime}ms:`, error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update remaining meal plan',
       error: error.message,
     });
   }
@@ -567,7 +725,9 @@ export const checkFood = async (req, res) => {
     try {
       const result = await checkFoodSafetyWithAI(user, food.trim(), portion || '');
       if (!result) throw new Error('No AI result');
-      return res.json({ success: true, food: food.trim(), portion: portion || '', result });
+      recordOpenAiUsage(req.userId, result.usage, 'food-safety-check', 'gpt-4o-mini').catch(() => {});
+      const { usage, ...foodCheckResult } = result;
+      return res.json({ success: true, food: food.trim(), portion: portion || '', result: foodCheckResult });
     } catch (err) {
       console.warn('[checkFood] AI failed, using fallback:', err.message);
       const lower = food.toLowerCase();
@@ -621,8 +781,10 @@ export const foodSwaps = async (req, res) => {
     }
 
     try {
-      const swaps = await generateFoodSwapsWithAI(user, food.trim());
+      const result = await generateFoodSwapsWithAI(user, food.trim());
+      const swaps = Array.isArray(result) ? result : result?.swaps;
       if (!swaps || !swaps.length) throw new Error('No swaps returned');
+      recordOpenAiUsage(req.userId, result?.usage, 'food-swap', 'gpt-4o-mini').catch(() => {});
       return res.json({ success: true, food: food.trim(), swaps });
     } catch (err) {
       console.warn('[foodSwaps] AI failed, using fallback:', err.message);
@@ -670,19 +832,35 @@ const rescueMealTemplates = {
   },
 };
 
-const rescueMacroSplit = (calories, mealType) => {
+const rescueMacroSplit = (calories, mealType, proteinGrams = null) => {
   const type = String(mealType || '').toLowerCase();
-  const proteinRatio = type.includes('snack') ? 0.22 : 0.38;
+  const fallbackProteinRatio = type.includes('snack') ? 0.22 : 0.38;
+  const maxProteinFromCalories = Math.floor((calories * 0.48) / 4);
+  const protein = proteinGrams == null
+    ? Math.round((calories * fallbackProteinRatio) / 4)
+    : Math.max(0, Math.min(maxProteinFromCalories, Math.round(proteinGrams)));
   const carbRatio = type.includes('dinner') ? 0.25 : 0.32;
-  const fatRatio = Math.max(0.18, 1 - proteinRatio - carbRatio);
+  const proteinCalories = protein * 4;
+  const remainingCalories = Math.max(0, calories - proteinCalories);
+  const carbs = Math.max(0, Math.round((calories * carbRatio) / 4));
+  const fat = Math.max(0, Math.round(Math.max(0, remainingCalories - (carbs * 4)) / 9));
   return {
-    carbs: Math.max(0, Math.round((calories * carbRatio) / 4)),
-    protein: Math.max(0, Math.round((calories * proteinRatio) / 4)),
-    fat: Math.max(0, Math.round((calories * fatRatio) / 9)),
+    carbs,
+    protein,
+    fat,
   };
 };
 
-const buildRescueMeal = (meal, calories) => {
+const dietRescueMealTitle = (name) => {
+  const originalName = String(name || 'Meal')
+    .replace(/^Diet Rescue Meal:\s*/i, '')
+    .replace(/^Diet Rescue\s+/i, '')
+    .trim();
+  return `Diet Rescue Meal: ${originalName || 'Meal'}`;
+};
+
+const buildRescueMeal = (meal, calories, proteinGrams) => {
+  const originalName = meal.name;
   const mealType = meal.mealType || 'Snack';
   const key = String(mealType).toLowerCase();
   const template =
@@ -691,12 +869,12 @@ const buildRescueMeal = (meal, calories) => {
     (key.includes('dinner') && rescueMealTemplates.dinner) ||
     rescueMealTemplates.snack;
 
-  meal.name = template.name;
+  meal.name = dietRescueMealTitle(originalName);
   meal.description = template.description;
   meal.portionGuide = template.portionGuide;
   meal.sugarImpact = 'Low';
   meal.calories = calories;
-  meal.macros = rescueMacroSplit(calories, mealType);
+  meal.macros = rescueMacroSplit(calories, mealType, proteinGrams);
   meal.tags = Array.from(new Set([...(meal.tags || []), 'Diet Rescue', 'Light meal', 'Low calorie']));
   meal.ingredients = template.ingredients;
 };
@@ -728,6 +906,12 @@ export const dietRescue = async (req, res) => {
     if (!dayPlan || !Array.isArray(dayPlan.meals) || dayPlan.meals.length === 0) {
       return res.status(404).json({ success: false, message: 'No meals found for today.' });
     }
+    const preservedDayTotalCalories = Number(dayPlan.totalCalories) || Number(activePlan.dailyCalorieTarget || 0);
+    const preservedDayTotalMacros = {
+      carbs: Number(dayPlan.totalMacros?.carbs ?? activePlan.dailyMacroTargets?.carbs ?? 0),
+      protein: Number(dayPlan.totalMacros?.protein ?? activePlan.dailyMacroTargets?.protein ?? 0),
+      fat: Number(dayPlan.totalMacros?.fat ?? activePlan.dailyMacroTargets?.fat ?? 0),
+    };
 
     const tomorrowDate = new Date(todayDate);
     tomorrowDate.setDate(tomorrowDate.getDate() + 1);
@@ -739,7 +923,13 @@ export const dietRescue = async (req, res) => {
       ],
     }).lean();
     const consumed = foodLogs.reduce((sum, log) => sum + (Number(log.calories) || 0), 0);
-    const remainingBudget = Math.max(0, Number(activePlan.dailyCalorieTarget || 0) - consumed);
+    const consumedProtein = foodLogs.reduce(
+      (sum, log) => sum + (Number(log.macros?.protein) || Number(log.protein) || 0),
+      0
+    );
+    const dailyCalorieTarget = Number(activePlan.dailyCalorieTarget || dayPlan.totalCalories || 0);
+    const dailyProteinTarget = Number(activePlan.dailyMacroTargets?.protein || dayPlan.totalMacros?.protein || 0);
+    const remainingBudget = Math.max(0, dailyCalorieTarget - consumed);
     const completedKeys = new Set(
       foodLogs
         .filter((log) => log.source === 'meal_plan' && log.status === 'completed' && log.plannedMealKey)
@@ -767,30 +957,55 @@ export const dietRescue = async (req, res) => {
       (sum, meal) => sum + (Number(meal.calories) || 0),
       0
     );
-    const rescueBudget = remainingBudget > 0
-      ? Math.min(remainingBudget, Math.max(remainingMeals.length * 90, originalRemainingCalories * 0.55))
-      : remainingMeals.length * 90;
+    const originalRemainingProtein = remainingMeals.reduce(
+      (sum, meal) => sum + (Number(meal.macros?.protein) || 0),
+      0
+    );
+    const minRemainingCalories = remainingMeals.reduce((sum, meal) => {
+      const type = String(meal.mealType || '').toLowerCase();
+      return sum + (type.includes('snack') ? 140 : 260);
+    }, 0);
+    const minRemainingProtein = remainingMeals.reduce((sum, meal) => {
+      const type = String(meal.mealType || '').toLowerCase();
+      return sum + (type.includes('snack') ? 8 : 18);
+    }, 0);
+    const rescueBudget = Math.max(
+      minRemainingCalories,
+      Math.min(
+        originalRemainingCalories || minRemainingCalories,
+        remainingBudget || minRemainingCalories
+      )
+    );
+    const remainingProteinBudget = Math.max(
+      minRemainingProtein,
+      Math.min(
+        originalRemainingProtein || minRemainingProtein,
+        Math.max(0, dailyProteinTarget - consumedProtein)
+      )
+    );
     const originalBudget = originalRemainingCalories || remainingMeals.length;
+    const originalProteinBudget = originalRemainingProtein || remainingMeals.length;
 
     for (const meal of remainingMeals) {
       const originalCalories = Number(meal.calories) || (originalBudget / remainingMeals.length);
       const share = originalBudget > 0 ? originalCalories / originalBudget : 1 / remainingMeals.length;
-      const minCalories = String(meal.mealType || '').toLowerCase().includes('snack') ? 70 : 100;
-      const maxCalories = String(meal.mealType || '').toLowerCase().includes('dinner') ? 240 : 280;
+      const proteinShare = originalProteinBudget > 0
+        ? (Number(meal.macros?.protein) || 0) / originalProteinBudget
+        : share;
+      const type = String(meal.mealType || '').toLowerCase();
+      const minCalories = type.includes('snack') ? 140 : 260;
+      const maxCalories = Math.max(minCalories, originalCalories);
       const rescueCalories = Math.round(rescueBudget * share);
       const newCalories = Math.max(minCalories, Math.min(maxCalories, rescueCalories));
-      buildRescueMeal(meal, newCalories);
+      const minProtein = type.includes('snack') ? 8 : 18;
+      const rescueProtein = Math.round(remainingProteinBudget * proteinShare);
+      const maxProtein = Math.max(minProtein, Math.floor((newCalories * 0.48) / 4));
+      const newProtein = Math.max(minProtein, Math.min(maxProtein, rescueProtein));
+      buildRescueMeal(meal, newCalories, newProtein);
     }
 
-    dayPlan.totalCalories = dayPlan.meals.reduce((sum, meal) => sum + (Number(meal.calories) || 0), 0);
-    dayPlan.totalMacros = dayPlan.meals.reduce(
-      (sum, meal) => ({
-        carbs: sum.carbs + (Number(meal.macros?.carbs) || 0),
-        protein: sum.protein + (Number(meal.macros?.protein) || 0),
-        fat: sum.fat + (Number(meal.macros?.fat) || 0),
-      }),
-      { carbs: 0, protein: 0, fat: 0 }
-    );
+    dayPlan.totalCalories = preservedDayTotalCalories;
+    dayPlan.totalMacros = preservedDayTotalMacros;
     await activePlan.save();
 
     return res.json({
@@ -851,8 +1066,10 @@ export const groceryList = async (req, res) => {
     }
 
     try {
-      const list = await generateGroceryListWithAI(user, plannedMeals);
-      if (!list || !list.categories || !list.categories.length) throw new Error('Empty grocery list');
+      const result = await generateGroceryListWithAI(user, plannedMeals);
+      if (!result || !result.categories || !result.categories.length) throw new Error('Empty grocery list');
+      recordOpenAiUsage(req.userId, result.usage, 'grocery-list', 'gpt-4o-mini').catch(() => {});
+      const { usage, ...list } = result;
       activePlan.groceryList = list;
       activePlan.groceryListGeneratedAt = new Date();
       await activePlan.save();

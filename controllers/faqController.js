@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { getMergedKnowledgeText } from '../services/knowledgeStoreService.js';
+import { recordOpenAiUsage } from '../utils/trackUsage.js';
 
 const MAX_HISTORY_MESSAGES = 10;
 
@@ -103,6 +104,8 @@ Do NOT attempt to answer from general knowledge.`;
         message: 'Received an empty response from the AI. Please try again.',
       });
     }
+
+    recordOpenAiUsage(null, completion.usage, 'faq-chat', 'gpt-4o-mini').catch(() => {});
 
     return res.json({ success: true, reply });
   } catch (err) {
