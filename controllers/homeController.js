@@ -106,11 +106,18 @@ export const getHomeDashboard = async (req, res) => {
       };
     });
 
-    // Targets come from the original generated plan and must not move when Diet Rescue rewrites meals.
-    const effectiveProteinTarget = Math.round(Number(macroTargets.protein) || 120);
+    const plannedMealCalories = (todayPlanDay?.meals || [])
+      .reduce((sum, meal) => sum + (Number(meal.calories) || 0), 0);
+    const plannedMealProtein = (todayPlanDay?.meals || [])
+      .reduce((sum, meal) => sum + (Number(meal.macros?.protein) || Number(meal.protein) || 0), 0);
 
-    // Keep the calorie target pinned to the generated plan's daily target.
-    const calorieTarget = Math.round(Number(mealPlan?.dailyCalorieTarget) || 1820);
+    // Keep daily goals aligned with the exact meals shown for the current plan day.
+    const calorieTarget = Math.round(
+      Number(todayPlanDay?.totalCalories) || plannedMealCalories || Number(mealPlan?.dailyCalorieTarget) || 1820
+    );
+    const effectiveProteinTarget = Math.round(
+      Number(todayPlanDay?.totalMacros?.protein) || plannedMealProtein || Number(macroTargets.protein) || 120
+    );
 
     // Append extra food logs (not from meal plan) as additional meal entries
     const extraFoodLogs = foodLogs.filter((l) => l.source !== 'meal_plan');

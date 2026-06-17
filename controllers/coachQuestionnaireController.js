@@ -84,6 +84,9 @@ export const updateCoachQuestionnaire = async (req, res) => {
       gender,
       age,
       heightCm,
+      heightUnit,
+      heightFeet,
+      heightInches,
       weight,
       targetWeight,
       preferredCuisine,
@@ -160,8 +163,14 @@ export const updateCoachQuestionnaire = async (req, res) => {
     if (questionnaireComplete !== undefined) {
       user.coachProfile.questionnaireComplete = questionnaireComplete;
     }
+    if (heightUnit !== undefined) user.coachProfile.heightUnit = heightUnit;
 
-    if (heightCm !== undefined) {
+    if (heightUnit === 'ft/in' && (heightFeet !== undefined || heightInches !== undefined)) {
+      user.height = {
+        feet: heightFeet !== undefined ? parseInt(heightFeet, 10) : 0,
+        inches: heightInches !== undefined ? parseInt(heightInches, 10) : 0
+      };
+    } else if (heightCm !== undefined) {
       user.height = { cm: parseFloat(heightCm) };
     }
     if (weight !== undefined) user.weight = weight;

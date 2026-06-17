@@ -30,6 +30,57 @@ function getOpenAI() {
 // - user.budget, cookingTime (lifestyle preferences)
 // - user.activityLevel, height, weight (physical info)
 // ---------------------------------------------------------------------------
+function listText(value, fallback = 'None') {
+  if (Array.isArray(value)) {
+    const cleaned = value.map((item) => String(item || '').trim()).filter(Boolean);
+    return cleaned.length ? cleaned.join(', ') : fallback;
+  }
+  const text = String(value || '').trim();
+  return text || fallback;
+}
+
+function mergedList(...values) {
+  const items = [];
+  values.forEach((value) => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        const text = String(item || '').trim();
+        if (text) items.push(text);
+      });
+    } else {
+      const text = String(value || '').trim();
+      if (text) items.push(text);
+    }
+  });
+  return Array.from(new Set(items));
+}
+
+function labelFromKey(value) {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function buildMealManagementInstruction(user) {
+  const style = String(user?.coachProfile?.mealManagement || '').toLowerCase();
+  if (style === 'mixed') {
+    return 'Mixed routine: combine meal styles in the plan. When meal count allows, include at least one home-cooked/prepped meal and at least one restaurant, cafeteria, or ordered-food style meal each day. Keep ordered/outside meals realistic, portion-controlled, and aligned with the user profile.';
+  }
+  if (style === 'eat_outside') {
+    return 'Mostly outside meals: make meals restaurant/cafeteria friendly with practical ordering guidance, portion control, and healthier swaps.';
+  }
+  if (style === 'order_food') {
+    return 'Order-food routine: suggest delivery-friendly meals that can be ordered easily, with clear portion control and healthier options.';
+  }
+  if (style === 'meal_prep') {
+    return 'Meal prep routine: favor meals that can be cooked in batches and stored safely for a few days.';
+  }
+  if (style === 'home_cooked') {
+    return 'Home-cooked routine: favor simple home meals with familiar ingredients and practical cooking steps.';
+  }
+  return 'Meal management not specified: use realistic meals that are easy to follow.';
+}
+
 function buildWelloraContext(user) {
   const dietStyle = [
     user.dietPreferences?.vegetarian ? 'Vegetarian' : null,
@@ -38,20 +89,28 @@ function buildWelloraContext(user) {
     user.dietPreferences?.dairyFree ? 'Dairy-Free' : null,
   ].filter(Boolean).join(', ') || 'No restriction';
 
-  const healthConditions = user.healthConditions?.join(', ') || 'None reported';
-  const allergies = user.dietPreferences?.allergies?.join(', ') || 'None';
+  const coachProfile = user.coachProfile || {};
+  const healthConditions = listText(
+    mergedList(user.healthConditions, coachProfile.healthConditions, coachProfile.healthConditionsOther),
+    'None reported'
+  );
+  const allergies = listText(
+    mergedList(user.dietPreferences?.allergies, coachProfile.foodAllergies, coachProfile.foodAllergiesOther),
+    'None'
+  );
   const meds = (user.medications || [])
     .map(m => `${m.name}${m.dosage ? ' ' + m.dosage : ''}${m.timing ? ' @ ' + m.timing : ''}`)
     .join('; ') || 'None';
-  const likes = (user.foodLikes || []).join(', ') || 'No specific likes';
-  const dislikes = (user.foodDislikes || []).join(', ') || 'None';
-  const localFoods = (user.localFoodPreferences || []).join(', ') || 'No specific local foods';
+  const likes = listText(mergedList(user.foodLikes, coachProfile.likedFoods, coachProfile.likedFoodsOther), 'No specific likes');
+  const dislikes = listText(mergedList(user.foodDislikes, coachProfile.foodsToAvoid, coachProfile.foodsToAvoidOther), 'None');
+  const restrictions = listText(mergedList(coachProfile.foodRestrictions, coachProfile.foodRestrictionsOther), 'None');
+  const localFoods = listText(mergedList(user.localFoodPreferences, coachProfile.localFoodPreferences), 'No specific local foods');
 
   // Map from questionnaire data structure:
   // coachProfile.mainGoal, age, targetWeight, preferredCuisine, weightLossPace, dailyRoutine, foodPreparer, weightLossProblems
-  const coachProfile = user.coachProfile || {};
   const mainGoal = coachProfile.mainGoalOther || coachProfile.mainGoal || 'Not specified';
   const age = coachProfile.age || 'Not provided';
+  const gender = labelFromKey(coachProfile.gender || user.gender || user.biologicalSex || 'Not provided');
   const targetWeight = coachProfile.targetWeight || 'Not set';
   const cuisine = coachProfile.preferredCuisine || 'No preference';
   const pace = coachProfile.weightLossPace || 'Not specified';
@@ -59,11 +118,12 @@ function buildWelloraContext(user) {
   const preparer = coachProfile.foodPreparer || 'Not specified';
   const mealsPerDay = coachProfile.mealsPerDay || 'Not specified';
   const mealManagement = coachProfile.mealManagement || 'Not specified';
-  const challenges = (coachProfile.weightLossProblems || []).join(', ') || 'None reported';
+  const challenges = listText(mergedList(coachProfile.weightLossProblems, coachProfile.weightLossProblemsOther), 'None reported');
+  const mealManagementInstruction = buildMealManagementInstruction(user);
 
-  return `WELLORA USER DIET PROFILE
+  return `WELLORA HEALTH USER DIET PROFILE
 - Main Goal: ${mainGoal}
-- Age: ${age} | Height: ${user.height?.cm || 'Not recorded'} cm | Weight: ${user.weight || 'Not recorded'} kg | Target: ${targetWeight} kg
+- Age: ${age} | Gender: ${gender} | Height: ${user.height?.cm || 'Not recorded'} cm | Weight: ${user.weight || 'Not recorded'} kg | Target: ${targetWeight} kg
 - Health goal/context: ${user.diabetesType || 'General diet and wellness'}
 - Health conditions to consider: ${healthConditions}
 - Fasting blood sugar, if provided: ${user.fastingSugar != null ? user.fastingSugar + ' mg/dL' : 'Not recorded'}
@@ -72,6 +132,7 @@ function buildWelloraContext(user) {
 - Activity level: ${user.activityLevel || 'Not specified'}
 - Weight loss pace: ${pace}
 - Diet style: ${dietStyle}
+- Food restrictions: ${restrictions}
 - Allergies: ${allergies}
 - Preferred cuisine: ${cuisine}
 - Likes: ${likes}
@@ -83,6 +144,7 @@ function buildWelloraContext(user) {
 - Food preparer: ${preparer}
 - Preferred meal routine: ${mealsPerDay}
 - Meal management style: ${mealManagement}
+- Meal management guidance: ${mealManagementInstruction}
 - Weight loss challenges: ${challenges}`;
 }
 
@@ -153,18 +215,21 @@ function normalizeWaterTargetLitres(value, fallback = 3) {
   return Math.max(2, Math.min(5, Math.round(litres)));
 }
 
-const WELLORA_SYSTEM_PROMPT = `You are Wellora Health's AI nutrition coach for a diet, meal-planning, food logging, and healthy-habit app.
-You help users follow realistic nutrition plans for goals such as weight loss, fat loss, muscle gain, maintenance, better energy, healthier eating, and condition-aware wellness.
-You specialise in practical, culturally appropriate meals, especially South Asian / Pakistani / Indian foods (roti, rice, daal, salan, qeema, biryani, fruits), while adapting to any cuisine the user prefers.
-Core principles you ALWAYS apply:
-1. Personalise advice to the user's goal, calorie target, macro targets, preferences, allergies, budget, cooking time, and routine.
-2. Keep meals realistic, filling, high in protein when appropriate, rich in fibre, and portion-controlled.
-3. Show clear portions in everyday units: "1/2 roti", "1 roti", "1/2 cup cooked rice", "1 small fruit", "1 cup daal".
-4. Respect cultural foods instead of forcing generic diet foods.
-5. Avoid extreme restriction, crash diets, unsafe fasting, or shaming language.
-6. Consider health conditions and medications when provided, but never replace medical advice.
-7. For users with health conditions or sugar concerns, include condition-aware guidance; otherwise keep the answer focused on the user's diet goal.
-Return ONLY valid JSON when a JSON schema is requested. No markdown, no extra commentary.`;
+const WELLORA_SYSTEM_PROMPT = `You are Wellora Health's AI nutrition assistant for a diet planning, meal tracking, grocery, and healthy habit app.
+Create practical, realistic, culturally suitable, and goal-focused nutrition guidance from the user's profile, preferences, restrictions, and targets.
+You are not a doctor, dietitian, emergency service, or medical provider. Give general wellness and nutrition guidance only.
+
+Core rules:
+1. Personalize every answer to the user's goal, age, gender, height, weight, activity, meal routine, meal management style, cuisine, food likes/dislikes, allergies, restrictions, health context, budget, and cooking time.
+2. Safety overrides preferences. Never include foods that conflict with allergies, intolerances, health conditions, food restrictions, halal/vegetarian/vegan rules, or disliked foods.
+3. Keep foods realistic, familiar, affordable, and easy to follow. Use everyday portions like "1 roti", "1/2 cup daal", "1/2 cup cooked rice", "1 palm-sized chicken piece", "1 small fruit", "1 cup yogurt", or "1 tsp oil".
+4. Respect preferred cuisine, including South Asian, Pakistani, Indian, Middle Eastern, Chinese, Italian, Continental, or mixed meals when selected.
+5. Support the user's goal: weight loss uses filling portion-controlled meals; gain weight uses nutrient-dense surplus meals; muscle gain prioritizes protein; maintenance and healthier eating use balanced meals.
+6. Avoid crash diets, extreme fasting, detoxes, miracle claims, guilt, punishment, and unsafe very-low-calorie advice.
+7. Be condition-aware but not medical. Recommend qualified professional help for medical diets, medication changes, pregnancy, diabetes management, hypertension, cholesterol, thyroid issues, eating disorders, or serious symptoms.
+8. Be specific. Do not say "eat healthy food" without naming foods and portions.
+9. Use variety and avoid overusing salads, oats, boiled eggs, grilled chicken, or generic Western diet meals unless they match the user.
+10. When JSON is requested, return one valid JSON object only: double-quoted keys/strings, no markdown, no comments, no trailing commas, no NaN/undefined, no extra text.`;
 
 // ---------------------------------------------------------------------------
 // 1) Daily / weekly Wellora meal plan
@@ -183,6 +248,7 @@ export async function generateMealPlanDayWithAI(user, dailyCalorieTarget, dailyM
     const routineConfig = getMealRoutineConfig(user);
     const calorieLines = buildMealCalorieLines(routineConfig.mealTypes, dailyCalorieTarget);
     const mealSchema = buildMealJsonSchema(routineConfig.mealTypes);
+    const mealManagementInstruction = buildMealManagementInstruction(user);
 
     const prompt = `${context}
 
@@ -196,12 +262,17 @@ Macro targets per day: Carbs ${dailyMacroTargets.carbs}g, Protein ${dailyMacroTa
 
 RULES:
 - Use the user's local foods, likes, budget and cooking time wherever possible.
+- Meal management rule: ${mealManagementInstruction}
+- If the user selected mixed routine, make the day feel genuinely mixed: include both a home/prepped option and an outside/ordered/cafeteria-friendly option when ${routineConfig.count} meals allows it.
+- Completely exclude allergies, intolerances, restricted foods, and disliked foods from every meal and ingredient.
+- Use only these meal types, in this order: [${routineConfig.mealTypes.join(', ')}].
 - Each meal MUST include a clear "portionGuide" in everyday units (e.g. "1 roti + ½ cup daal + salad", "½ cup cooked basmati rice + chicken salan").
 - Each meal MUST support the user's main goal and stay near the calorie/macro target.
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
 - Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
-- Description should explain WHY this meal supports the user's goal (2-3 sentences).
+- Description should explain WHY this meal supports the user's goal in 1-2 short sentences.
 - Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
+- Before returning, internally verify exact meal count, valid JSON, realistic calories/protein, clear portions, and no restricted foods.
 
 Return JSON only — the meals array MUST have exactly ${routineConfig.count} entries:
 {"waterTargetLitres":3,"meals":[
@@ -280,6 +351,7 @@ export async function generateMealPlanWithAI(user, dailyCalorieTarget, dailyMacr
     const routineConfig = getMealRoutineConfig(user);
     const calorieLines = buildMealCalorieLines(routineConfig.mealTypes, dailyCalorieTarget);
     const mealSchema = buildMealJsonSchema(routineConfig.mealTypes);
+    const mealManagementInstruction = buildMealManagementInstruction(user);
 
     const prompt = `${context}
 
@@ -293,12 +365,17 @@ Macro targets per day: Carbs ${dailyMacroTargets.carbs}g, Protein ${dailyMacroTa
 
 REQUIREMENTS:
 - Use the user's local foods, likes, budget and cooking time wherever possible.
+- Meal management rule: ${mealManagementInstruction}
+- If the user selected mixed routine, vary each day across home-cooked/prepped meals and outside/ordered/cafeteria-friendly meals. When meal count allows, include at least one of each style per day.
+- Completely exclude allergies, intolerances, restricted foods, and disliked foods from every meal and ingredient.
+- Use only these meal types, in this order: [${routineConfig.mealTypes.join(', ')}].
 - Vary meals across the 7 days (no exact repeats).
 - Each meal MUST include "portionGuide" in everyday units (e.g. "1 roti + ½ cup daal + salad", "½ cup cooked basmati rice + chicken salan").
 - Each meal MUST support the user's main goal and stay near the calorie/macro target.
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
 - Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
 - Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
+- Before returning, internally verify 7 days, exact meal count per day, valid JSON, realistic calories/protein, clear portions, good variety, and no restricted foods.
 
 Return JSON only — each day's meals array MUST have exactly ${routineConfig.count} entries:
 {"waterTargetLitres":3,"days":[{"meals":[
@@ -451,6 +528,8 @@ export async function generateFoodSwapsWithAI(user, foodName) {
 
 Suggest 4 SMART MEAL SWAPS for: "${foodName}".
 Each swap must be culturally appropriate (use roti, rice, daal, salan, qeema, biryani, fruits etc. when relevant), affordable for the user's budget and quick to prepare.
+The swaps must feel like realistic alternatives with similar meal purpose and similar nutritional benefits, not random low-calorie snacks.
+Do not include allergies, restricted foods, or disliked foods. Keep portions specific and goal-friendly.
 
 Return JSON only:
 {
@@ -527,6 +606,8 @@ STRICT RULES:
 4. Estimate conservative, realistic quantities for ONE person for the week — do not round up generously or pad quantities.
 5. Use everyday units (kg, g, packs, pieces, dozen, cups).
 6. Only include the "avoid" list if there are real allergy/restriction conflicts to flag; otherwise return an empty array.
+7. Respect the user's allergies, restrictions, dislikes, cuisine, budget, and meal management style.
+8. Keep the list practical for Wellora Health meal prep and everyday cooking; do not add generic diet items that are not connected to the plan.
 
 Return JSON only, with only as many categories as are actually needed (omit any category with no items):
 {
@@ -592,6 +673,7 @@ export async function generateChatResponse(userMessage, user, chatHistory = []) 
 You are chatting with the user inside the app. Be empathetic, short (2-3 short paragraphs max) and practical.
 When asked "can I eat X" always give: verdict (Fits your plan / Have with care / Limit or avoid), a goal-friendly portion, and a quick reason tied to calories, protein, fibre, and the user's goal.
 When the user feels discouraged after overeating, missing a meal, weight changes, or low motivation, calm them first, then give 1-2 concrete next steps.
+Use the user's plan context, routine, restrictions, and preferences. Give specific food and portion suggestions instead of generic advice.
 Never replace medical advice. Mention consulting a doctor or dietitian for medical conditions, medication changes, pregnancy, eating-disorder concerns, or very aggressive weight goals.
 
 ${context}`;

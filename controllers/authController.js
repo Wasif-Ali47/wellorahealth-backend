@@ -225,15 +225,17 @@ export const resendOtp = async (req, res) => {
       console.log(`[auth][resend-otp] ✅ sendOTPEmail completed for ${user.email}`);
     } catch (mailErr) {
       console.error('[auth][resend-otp] ❌ OTP send failed:', mailErr?.message || mailErr);
-      return res.status(500).json({
-        error: AUTH_MESSAGES.OTP_SEND_FAILED,
-        detail: mailErr?.message || 'SMTP error',
+      return res.json({
+        message: 'OTP generated. Email delivery is temporarily unavailable.',
+        userId: user._id.toString(),
+        emailSent: false,
       });
     }
 
     res.json({
       message: 'OTP sent successfully.',
       userId: user._id.toString(),
+      emailSent: true,
     });
   } catch (err) {
     console.error('[auth][resend-otp] FAILED:', err?.message || err);
@@ -384,6 +386,7 @@ export const login = async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        emailVerified: user.emailVerified,
         onboardingComplete: user.onboardingComplete,
       },
     });
@@ -485,6 +488,7 @@ export const googleSignIn = async (req, res) => {
         profileImageUrl: user.profileImageUrl,
         subscriptionPlan: user.subscriptionPlan,
         isPro: user.isPro === true,
+        emailVerified: user.emailVerified,
         onboardingComplete: user.onboardingComplete,
       },
     });
@@ -530,6 +534,7 @@ export const guestLogin = async (req, res) => {
         id: user._id.toString(),
         email: user.email,
         firstName: user.firstName,
+        emailVerified: user.emailVerified,
         onboardingComplete: user.onboardingComplete
       }
     });
@@ -574,7 +579,8 @@ export const upgradeGuest = async (req, res) => {
 
     const em = (user.email || '').toLowerCase();
     const isGuest = /^guest_[^@]+@wellorahealth\.app$/i.test(em);
-    if (!isGuest) {
+    const isPendingEmailVerification = user.emailVerified === false;
+    if (!isGuest && !isPendingEmailVerification) {
       return res.status(400).json({
         success: false,
         message: 'This account is already a full account. Use profile settings to change your email.'
@@ -592,6 +598,10 @@ export const upgradeGuest = async (req, res) => {
 
     const previousEmail = user.email;
     const previousPassword = user.password;
+    const previousFirstName = user.firstName;
+    const previousLastName = user.lastName;
+    const previousEmailVerified = user.emailVerified;
+    const previousOtp = user.otp;
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
     user.email = normalizedEmail;
@@ -611,8 +621,10 @@ export const upgradeGuest = async (req, res) => {
       console.error('[auth][upgrade-guest] ❌ OTP send failed:', mailErr?.message || mailErr);
       user.email = previousEmail;
       user.password = previousPassword;
-      user.emailVerified = undefined;
-      user.otp = null;
+      user.firstName = previousFirstName;
+      user.lastName = previousLastName;
+      user.emailVerified = previousEmailVerified;
+      user.otp = previousOtp;
       await user.save();
       return res.status(500).json({ error: AUTH_MESSAGES.OTP_SEND_FAILED });
     }
@@ -626,6 +638,7 @@ export const upgradeGuest = async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        emailVerified: user.emailVerified,
         onboardingComplete: user.onboardingComplete,
       },
     });
@@ -674,6 +687,7 @@ export const verifyToken = async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        emailVerified: user.emailVerified,
         onboardingComplete: user.onboardingComplete
       }
     });

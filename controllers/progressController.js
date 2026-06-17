@@ -101,16 +101,18 @@ function emptyDaySummary(dateKey) {
 function computeLoggingStreak(caloriesByDay, timezoneOffset) {
   let streak = 0;
   const cursor = new Date();
-  for (let i = 0; i < 365; i++) {
-    const key = toLocalDateKey(cursor, timezoneOffset);
-    if ((caloriesByDay[key] || 0) > 0) {
-      streak += 1;
-    } else {
-      break;
-    }
+  const todayKey = toLocalDateKey(cursor, timezoneOffset);
+  const todayLogged = (caloriesByDay[todayKey] || 0) > 0;
+  if (!todayLogged) {
     cursor.setDate(cursor.getDate() - 1);
   }
-  return streak;
+  for (let i = 0; i < 365; i++) {
+    const key = toLocalDateKey(cursor, timezoneOffset);
+    if ((caloriesByDay[key] || 0) <= 0) break;
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return todayLogged || streak === 0 ? streak : streak + 1;
 }
 
 export const getProgressDashboard = async (req, res) => {

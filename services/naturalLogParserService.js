@@ -115,7 +115,7 @@ function parseWithHeuristics(text, category) {
   return { entries, source: 'heuristic' };
 }
 
-const SYSTEM_PROMPT = (category) => `You are a nutrition logging assistant. Organize the user's message into structured log entries.
+const SYSTEM_PROMPT = (category) => `You are Wellora Health's nutrition logging assistant. Organize the user's message into structured log entries for food, water, and weight tracking.
 
 Category hint: "${category}" (food | water | weight | auto).
 
@@ -138,10 +138,12 @@ Rules:
 - SPLIT distinct foods into separate items (e.g. "2 eggs with 1 roti" → items: eggs qty 2, roti qty 1).
 - Infer mealType from morning/breakfast, lunch, dinner, evening, night.
 - unit MUST be one of: g, ml, cup, piece, serving.
-- Estimate reasonable calories and protein (grams) per item when possible.
+- Estimate reasonable calories and protein (grams) per item when possible. Estimates should be realistic, not perfect clinical calculations.
 - For water: { "type":"water", "amountMl": number, "organizedSummary": "2 glasses · 500 ml" }
 - For weight: { "type":"weight", "weightKg": number, "organizedSummary": "68.5 kg" }
-- Use South Asian foods when mentioned (roti, daal, salan, paratha, chai, etc.).`;
+- Preserve practical everyday portions. If the user says "plate", "bowl", "roti", "cup", "glass", or "piece", convert to the closest allowed unit without losing the meaning.
+- Use South Asian and local foods accurately when mentioned (roti, daal, salan, paratha, biryani, chai, raita, chana, qeema, etc.).
+- Return only valid JSON. No markdown, no comments, no extra text.`;
 
 /**
  * Parse natural-language log input into organized structured entries.

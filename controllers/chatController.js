@@ -36,6 +36,7 @@ function computeUserIsPro(user) {
 }
 
 function isGuestUser(user) {
+  if (user?.emailVerified === false) return true;
   return /^guest_[^@]+@wellorahealth\.app$/i.test(String(user?.email || ''));
 }
 
@@ -451,6 +452,24 @@ export const getCareEntitlement = async (req, res) => {
 /**
  * Verify in-app purchase and persist premium entitlement on user.
  */
+function fallbackSubscriptionExpiry(productId) {
+  const id = String(productId || '').toLowerCase();
+  const expiresAt = new Date();
+  if (id.includes('day')) {
+    expiresAt.setDate(expiresAt.getDate() + 1);
+    return expiresAt;
+  }
+  if (id.includes('year') || id.includes('annual')) {
+    expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+    return expiresAt;
+  }
+  if (id.includes('month')) {
+    expiresAt.setMonth(expiresAt.getMonth() + 1);
+    return expiresAt;
+  }
+  return null;
+}
+
 export const verifyCarePurchase = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -502,7 +521,9 @@ export const verifyCarePurchase = async (req, res) => {
       purchaseToken,
       originalTransactionId: transactionId || null,
       status: verification.status || 'active',
-      expiresAt: verification.expiresAt ? new Date(verification.expiresAt) : null,
+      expiresAt: verification.expiresAt
+        ? new Date(verification.expiresAt)
+        : fallbackSubscriptionExpiry(productId),
       source: verification.source || 'unknown',
       lastVerifiedAt: new Date(),
     };

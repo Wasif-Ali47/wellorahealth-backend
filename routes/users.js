@@ -127,8 +127,11 @@ router.get('/coach-questionnaire', authenticate, coachQuestionnaireController.ge
 router.get('/coach-questionnaire/food-catalog', authenticate, coachQuestionnaireController.getFoodCatalog);
 router.put('/coach-questionnaire', authenticate, [
   body('mainGoal').optional().isString(),
-  body('age').optional().isInt({ min: 10, max: 120 }),
+  body('age').optional().isInt({ min: 10, max: 100 }),
   body('heightCm').optional().isFloat({ min: 50, max: 300 }),
+  body('heightUnit').optional().isIn(['cm', 'ft/in']),
+  body('heightFeet').optional().isInt({ min: 2, max: 8 }),
+  body('heightInches').optional().isInt({ min: 0, max: 11 }),
   body('weight').optional().isFloat({ min: 20, max: 500 }),
   body('targetWeight').optional().isFloat({ min: 20, max: 500 }),
   body('preferredCuisine').optional().isString(),
