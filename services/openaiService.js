@@ -81,6 +81,17 @@ function buildMealManagementInstruction(user) {
   return 'Meal management not specified: use realistic meals that are easy to follow.';
 }
 
+function buildCuisineInstruction(user) {
+  const cuisine = String(user?.coachProfile?.preferredCuisine || '').trim();
+  if (!cuisine || /no preference|mixed|any/i.test(cuisine)) {
+    return 'Cuisine rule: no single cuisine is required; still use the user\'s local foods, likes, dislikes, and restrictions.';
+  }
+  const nonSouthAsianGuard = /italian|continental|chinese|middle\s*eastern|arab|mediterranean/i.test(cuisine)
+    ? ' Do NOT use South Asian/Indian/Pakistani dish names or staples such as roti, chapati, paratha, daal/dal, besan cheela/chilla, sabzi, salan, qeema, tikka, chana, raita, biryani, pulao, atta, chutney, pakora, paneer, dosa, idli, or curry unless the selected cuisine itself is South Asian.'
+    : '';
+  return `Cuisine rule: the plan MUST be recognisably ${cuisine}. Do not insert meals from another cuisine unless the user explicitly listed that food as a like/local preference. Use ${cuisine}-appropriate ingredients, dish names, portions, and cooking styles while keeping the plan goal-friendly.${nonSouthAsianGuard}`;
+}
+
 function buildWelloraContext(user) {
   const dietStyle = [
     user.dietPreferences?.vegetarian ? 'Vegetarian' : null,
@@ -212,7 +223,8 @@ function mealRoutineInstruction(user) {
 function normalizeWaterTargetLitres(value, fallback = 3) {
   const litres = Number(value);
   if (!Number.isFinite(litres) || litres <= 0) return fallback;
-  return Math.max(2, Math.min(5, Math.round(litres)));
+  const clamped = Math.max(2, Math.min(5, litres));
+  return Math.round((clamped * 1000) / 250) * 0.25;
 }
 
 const WELLORA_SYSTEM_PROMPT = `You are Wellora Health's AI nutrition assistant for a diet planning, meal tracking, grocery, and healthy habit app.
@@ -249,6 +261,7 @@ export async function generateMealPlanDayWithAI(user, dailyCalorieTarget, dailyM
     const calorieLines = buildMealCalorieLines(routineConfig.mealTypes, dailyCalorieTarget);
     const mealSchema = buildMealJsonSchema(routineConfig.mealTypes);
     const mealManagementInstruction = buildMealManagementInstruction(user);
+    const cuisineInstruction = buildCuisineInstruction(user);
 
     const prompt = `${context}
 
@@ -261,17 +274,18 @@ ${calorieLines}
 Macro targets per day: Carbs ${dailyMacroTargets.carbs}g, Protein ${dailyMacroTargets.protein}g, Fat ${dailyMacroTargets.fat}g.
 
 RULES:
-- Use the user's local foods, likes, budget and cooking time wherever possible.
+- Use the user's likes, budget and cooking time wherever possible, but never override the selected cuisine.
+- ${cuisineInstruction}
 - Meal management rule: ${mealManagementInstruction}
 - If the user selected mixed routine, make the day feel genuinely mixed: include both a home/prepped option and an outside/ordered/cafeteria-friendly option when ${routineConfig.count} meals allows it.
 - Completely exclude allergies, intolerances, restricted foods, and disliked foods from every meal and ingredient.
 - Use only these meal types, in this order: [${routineConfig.mealTypes.join(', ')}].
-- Each meal MUST include a clear "portionGuide" in everyday units (e.g. "1 roti + ½ cup daal + salad", "½ cup cooked basmati rice + chicken salan").
+- Each meal MUST include a clear "portionGuide" in everyday units that match the selected cuisine.
 - Each meal MUST support the user's main goal and stay near the calorie/macro target.
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
 - Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
 - Description should explain WHY this meal supports the user's goal in 1-2 short sentences.
-- Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
+- Include "waterTargetLitres" as a personalized litre target based on the user's weight, activity level, climate/routine context, and health profile. Use 0.25L steps, for example 2.5, 2.75, 3.25, or 3.5.
 - Before returning, internally verify exact meal count, valid JSON, realistic calories/protein, clear portions, and no restricted foods.
 
 Return JSON only — the meals array MUST have exactly ${routineConfig.count} entries:
@@ -352,6 +366,7 @@ export async function generateMealPlanWithAI(user, dailyCalorieTarget, dailyMacr
     const calorieLines = buildMealCalorieLines(routineConfig.mealTypes, dailyCalorieTarget);
     const mealSchema = buildMealJsonSchema(routineConfig.mealTypes);
     const mealManagementInstruction = buildMealManagementInstruction(user);
+    const cuisineInstruction = buildCuisineInstruction(user);
 
     const prompt = `${context}
 
@@ -364,17 +379,18 @@ ${calorieLines}
 Macro targets per day: Carbs ${dailyMacroTargets.carbs}g, Protein ${dailyMacroTargets.protein}g, Fat ${dailyMacroTargets.fat}g.
 
 REQUIREMENTS:
-- Use the user's local foods, likes, budget and cooking time wherever possible.
+- Use the user's likes, budget and cooking time wherever possible, but never override the selected cuisine.
+- ${cuisineInstruction}
 - Meal management rule: ${mealManagementInstruction}
 - If the user selected mixed routine, vary each day across home-cooked/prepped meals and outside/ordered/cafeteria-friendly meals. When meal count allows, include at least one of each style per day.
 - Completely exclude allergies, intolerances, restricted foods, and disliked foods from every meal and ingredient.
 - Use only these meal types, in this order: [${routineConfig.mealTypes.join(', ')}].
 - Vary meals across the 7 days (no exact repeats).
-- Each meal MUST include "portionGuide" in everyday units (e.g. "1 roti + ½ cup daal + salad", "½ cup cooked basmati rice + chicken salan").
+- Each meal MUST include "portionGuide" in everyday units that match the selected cuisine.
 - Each meal MUST support the user's main goal and stay near the calorie/macro target.
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
 - Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
-- Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
+- Include "waterTargetLitres" as a personalized litre target based on the user's weight, activity level, climate/routine context, and health profile. Use 0.25L steps, for example 2.5, 2.75, 3.25, or 3.5.
 - Before returning, internally verify 7 days, exact meal count per day, valid JSON, realistic calories/protein, clear portions, good variety, and no restricted foods.
 
 Return JSON only — each day's meals array MUST have exactly ${routineConfig.count} entries:

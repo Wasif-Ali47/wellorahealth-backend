@@ -44,9 +44,9 @@ export const getHomeDashboard = async (req, res) => {
     // current weight) for legacy plans that predate this field.
     const planWaterLitres = Number(mealPlan?.waterTargetLitres);
     const estimatedWaterLitres = Number.isFinite(planWaterLitres) && planWaterLitres > 0
-      ? Math.round(planWaterLitres)
+      ? planWaterLitres
       : 3;
-    const waterTargetMl = estimatedWaterLitres * 1000;
+    const waterTargetMl = Math.round((estimatedWaterLitres * 1000) / 250) * 250;
 
     const foodLogs = await FoodLog.find({ userId, ...dayFilter }).lean();
 
@@ -111,12 +111,14 @@ export const getHomeDashboard = async (req, res) => {
     const plannedMealProtein = (todayPlanDay?.meals || [])
       .reduce((sum, meal) => sum + (Number(meal.macros?.protein) || Number(meal.protein) || 0), 0);
 
-    // Keep daily goals aligned with the exact meals shown for the current plan day.
+    // Keep daily goals anchored to the plan's original daily targets. Meal swaps
+    // and Diet Rescue can adjust visible meals, but they must not move the max
+    // calorie/protein goals that were set when the plan was generated.
     const calorieTarget = Math.round(
-      Number(todayPlanDay?.totalCalories) || plannedMealCalories || Number(mealPlan?.dailyCalorieTarget) || 1820
+      Number(mealPlan?.dailyCalorieTarget) || Number(todayPlanDay?.totalCalories) || plannedMealCalories || 1820
     );
     const effectiveProteinTarget = Math.round(
-      Number(todayPlanDay?.totalMacros?.protein) || plannedMealProtein || Number(macroTargets.protein) || 120
+      Number(macroTargets.protein) || Number(todayPlanDay?.totalMacros?.protein) || plannedMealProtein || 120
     );
 
     // Append extra food logs (not from meal plan) as additional meal entries

@@ -9,7 +9,7 @@ import {
   generateFoodSwapsWithAI,
   generateGroceryListWithAI
 } from '../services/openaiService.js';
-import { buildClientDayRange } from '../utils/foodLogHelpers.js';
+import { buildClientDayRange, proteinFromLog } from '../utils/foodLogHelpers.js';
 import { recordOpenAiUsage } from '../utils/trackUsage.js';
 
 /**
@@ -85,7 +85,14 @@ function isGuestUser(user) {
 
 function waterTargetLitresForUser(user) {
   const weight = Number(user?.weight) || 70;
-  return Math.max(2, Math.min(5, Math.round((weight * 35) / 1000)));
+  const activity = String(user?.activityLevel || user?.coachProfile?.activityLevel || '').toLowerCase();
+  const activityExtraMl =
+    /extremely/.test(activity) ? 750 :
+    /very/.test(activity) ? 500 :
+    /moderately/.test(activity) ? 250 :
+    0;
+  const targetMl = Math.max(2000, Math.min(5000, weight * 35 + activityExtraMl));
+  return Math.round(targetMl / 250) * 0.25;
 }
 
 function expectedMealCountForUser(user) {
@@ -123,10 +130,11 @@ function clientDayKey(date) {
   return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
 }
 
-function buildReusableDayMap(existingPlan) {
+function buildReusableDayMap(existingPlan, user = null) {
   const map = new Map();
   (existingPlan?.days || []).forEach((day) => {
     if (!hasUsableMeals(day?.meals, 1)) return;
+    if (!mealsMatchSelectedCuisine(day.meals, user)) return;
     const key = clientDayKey(day.date);
     if (key) map.set(key, day);
   });
@@ -139,6 +147,40 @@ function normaliseMealsForSave(meals) {
     portionGuide: m.portionGuide || '',
     sugarImpact: m.sugarImpact || 'Low',
   }));
+}
+
+function selectedCuisine(user) {
+  return String(user?.coachProfile?.preferredCuisine || '').trim();
+}
+
+function cuisineKeyForFallback(user) {
+  const cuisine = selectedCuisine(user).toLowerCase();
+  if (/south\s*asian|pakistani|indian|bangladeshi|sri\s*lankan/.test(cuisine)) return 'southAsian';
+  if (/italian/.test(cuisine)) return 'italian';
+  if (/middle\s*eastern|arab|mediterranean/.test(cuisine)) return 'middleEastern';
+  if (/chinese/.test(cuisine)) return 'chinese';
+  if (/continental|western|american|european/.test(cuisine)) return 'continental';
+  return 'southAsian';
+}
+
+function hasSouthAsianCuisineMarker(meal) {
+  const text = [
+    meal?.name,
+    meal?.description,
+    meal?.portionGuide,
+    ...(Array.isArray(meal?.ingredients) ? meal.ingredients : []),
+    ...(Array.isArray(meal?.tags) ? meal.tags : []),
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  return /\b(roti|chapati|paratha|naan|daal|dal|besan|cheela|chilla|sabzi|salan|qeema|keema|tikka|chana|raita|biryani|pulao|atta|chutney|pakora|paneer|idli|dosa|sambar|poha|upma|curry)\b/.test(text);
+}
+
+function mealsMatchSelectedCuisine(meals, user) {
+  const cuisineKey = cuisineKeyForFallback(user);
+  if (cuisineKey === 'southAsian') return true;
+  return (meals || []).every((meal) => !hasSouthAsianCuisineMarker(meal));
 }
 
 function totalsForMeals(meals) {
@@ -173,7 +215,7 @@ export const generateMealPlan = async (req, res) => {
 
     const dailyCalorieTarget = calculateCalorieTarget(user);
     const dailyMacroTargets = calculateMacroTargets(dailyCalorieTarget);
-    let waterTargetLitres = waterTargetLitresForUser(user);
+    const waterTargetLitres = waterTargetLitresForUser(user);
     const expectedMealCount = expectedMealCountForUser(user);
     console.log(`[generateMealPlan] User profile loaded. Calorie target: ${dailyCalorieTarget}kcal`);
 
@@ -199,7 +241,7 @@ export const generateMealPlan = async (req, res) => {
       isActive: true
     }).sort({ createdAt: -1 });
     const reusableDayMap = requestedDays > 1
-      ? buildReusableDayMap(existingActivePlan)
+      ? buildReusableDayMap(existingActivePlan, user)
       : new Map();
     const shouldExtendExistingPlan = requestedDays > 1 && reusableDayMap.size > 0;
 
@@ -220,7 +262,6 @@ export const generateMealPlan = async (req, res) => {
         );
         recordOpenAiUsage(req.userId, result?.usage, 'meal-plan-day', 'gpt-4o-mini').catch(() => {});
         aiDays = [{ meals: result?.meals || [] }];
-        if (result?.waterTargetLitres) waterTargetLitres = result.waterTargetLitres;
       } catch (err) {
         console.warn('[generateMealPlan] Single-day AI generation failed, will use fallback:', err.message);
         aiDays = [{ meals: [] }];
@@ -255,9 +296,6 @@ export const generateMealPlan = async (req, res) => {
         aiDays[index] = { meals: result?.meals || [] };
       });
 
-      const firstWaterTarget = missingDayResults.find(({ result }) => result?.waterTargetLitres)?.result?.waterTargetLitres;
-      if (firstWaterTarget) waterTargetLitres = firstWaterTarget;
-      else if (existingActivePlan?.waterTargetLitres) waterTargetLitres = existingActivePlan.waterTargetLitres;
     } else {
       // Deactivate existing active plans only when building a brand-new full plan.
       await MealPlan.updateMany({ userId: req.userId, isActive: true }, { isActive: false });
@@ -267,7 +305,6 @@ export const generateMealPlan = async (req, res) => {
         console.log('[generateMealPlan] Attempting to generate full 7-day plan in one API call...');
         const result = await generateMealPlanWithAI(user, dailyCalorieTarget, dailyMacroTargets);
         recordOpenAiUsage(req.userId, result?.usage, 'meal-plan', 'gpt-4o-mini').catch(() => {});
-        if (result?.waterTargetLitres) waterTargetLitres = result.waterTargetLitres;
 
         if (result?.days && Array.isArray(result.days) && result.days.length >= 7) {
           console.log('[generateMealPlan] ✅ Successfully generated full 7-day plan in one call');
@@ -299,8 +336,6 @@ export const generateMealPlan = async (req, res) => {
         dayResults.forEach((result) => {
           recordOpenAiUsage(req.userId, result?.usage, 'meal-plan-day', 'gpt-4o-mini').catch(() => {});
         });
-        const firstWaterTarget = dayResults.find((result) => result?.waterTargetLitres)?.waterTargetLitres;
-        if (firstWaterTarget) waterTargetLitres = firstWaterTarget;
 
         aiDays = dayResults.map((result) => ({
           meals: result?.meals || []
@@ -320,9 +355,10 @@ export const generateMealPlan = async (req, res) => {
       const hasValidMeals = isReusedDay
         ? hasUsableMeals(meals, 1)
         : hasUsableMeals(meals, expectedMealCount);
+      const hasValidCuisine = mealsMatchSelectedCuisine(meals, user);
 
-      if (!hasValidMeals) {
-        console.warn(`[generateMealPlan] Day ${i + 1} meals invalid, using fallback`);
+      if (!hasValidMeals || !hasValidCuisine) {
+        console.warn(`[generateMealPlan] Day ${i + 1} meals ${hasValidMeals ? 'do not match selected cuisine' : 'invalid'}, using fallback`);
         meals = getFallbackMeals(i, dailyCalorieTarget, user).slice(0, expectedMealCount);
       }
 
@@ -463,8 +499,9 @@ export const regenerateRemainingMealPlan = async (req, res) => {
         Array.isArray(newMeals) &&
         newMeals.length >= expectedMealCount &&
         newMeals.every((m) => m?.name && m?.mealType && Number(m.calories) > 0);
+      const hasValidCuisine = mealsMatchSelectedCuisine(newMeals, user);
 
-      if (!hasValidMeals) {
+      if (!hasValidMeals || !hasValidCuisine) {
         newMeals = getFallbackMeals((day.dayNumber || (dayIndex + i + 1)) - 1, dailyCalorieTarget, user)
           .slice(0, expectedMealCount);
       }
@@ -501,6 +538,7 @@ export const regenerateRemainingMealPlan = async (req, res) => {
 
     activePlan.dailyCalorieTarget = dailyCalorieTarget;
     activePlan.dailyMacroTargets = dailyMacroTargets;
+    activePlan.waterTargetLitres = waterTargetLitresForUser(user);
     activePlan.groceryList = null;
     activePlan.groceryListGeneratedAt = null;
     activePlan.markModified('days');
@@ -776,6 +814,34 @@ function getFallbackMeals(dayIndex, calorieTarget, user = null) {
   const lunchCal = Math.round(calorieTarget * 0.35);
   const dinnerCal = Math.round(calorieTarget * 0.30);
   const snackCal = Math.round(calorieTarget * 0.10);
+  const selectedFallbackCuisine = cuisineKeyForFallback(user);
+
+  const cuisineFallbacks = {
+    italian: [
+      { mealType: 'Breakfast', name: 'Ricotta Berry Toast', portionGuide: '1 slice whole-grain toast + 1/3 cup ricotta + berries', sugarImpact: 'Low', description: 'A light Italian-style breakfast with protein from ricotta and fibre from whole grains and berries.', calories: breakfastCal, macros: { carbs: Math.round(breakfastCal * 0.40 / 4), protein: Math.round(breakfastCal * 0.28 / 4), fat: Math.round(breakfastCal * 0.32 / 9) }, tags: ['Italian', 'Goal-friendly'], ingredients: ['Whole-grain bread', 'Ricotta', 'Berries'] },
+      { mealType: 'Lunch', name: 'Grilled Chicken Caprese Bowl', portionGuide: '100 g grilled chicken + tomato + mozzarella + greens + 1/2 cup beans', sugarImpact: 'Low', description: 'Lean protein, vegetables, and beans keep this Italian-inspired bowl filling without a heavy pasta portion.', calories: lunchCal, macros: { carbs: Math.round(lunchCal * 0.32 / 4), protein: Math.round(lunchCal * 0.38 / 4), fat: Math.round(lunchCal * 0.30 / 9) }, tags: ['Italian', 'High Protein'], ingredients: ['Chicken', 'Tomato', 'Mozzarella', 'Beans', 'Greens'] },
+      { mealType: 'Dinner', name: 'Turkey Meatballs with Zucchini', portionGuide: '3 turkey meatballs + tomato sauce + 1 cup zucchini noodles', sugarImpact: 'Low', description: 'This keeps the familiar Italian flavour while using lean meat and vegetables instead of a large refined-carb serving.', calories: dinnerCal, macros: { carbs: Math.round(dinnerCal * 0.28 / 4), protein: Math.round(dinnerCal * 0.40 / 4), fat: Math.round(dinnerCal * 0.32 / 9) }, tags: ['Italian', 'Low GI'], ingredients: ['Turkey', 'Tomato sauce', 'Zucchini'] },
+      { mealType: 'Snack', name: 'Greek Yoghurt with Walnuts', portionGuide: '1 small bowl plain yoghurt + 4 walnut halves', sugarImpact: 'Low', description: 'A simple protein-rich snack that fits a Mediterranean-style Italian plan.', calories: snackCal, macros: { carbs: Math.round(snackCal * 0.30 / 4), protein: Math.round(snackCal * 0.30 / 4), fat: Math.round(snackCal * 0.40 / 9) }, tags: ['Italian', 'Snack'], ingredients: ['Plain yoghurt', 'Walnuts'] },
+    ],
+    middleEastern: [
+      { mealType: 'Breakfast', name: 'Labneh Plate with Cucumber', portionGuide: '1/2 cup labneh + cucumber + tomato + 1 small whole-wheat pita', sugarImpact: 'Low', description: 'Labneh adds protein and the vegetables add volume, keeping the pita portion controlled.', calories: breakfastCal, macros: { carbs: Math.round(breakfastCal * 0.38 / 4), protein: Math.round(breakfastCal * 0.30 / 4), fat: Math.round(breakfastCal * 0.32 / 9) }, tags: ['Middle Eastern', 'Low GI'], ingredients: ['Labneh', 'Cucumber', 'Tomato', 'Whole-wheat pita'] },
+      { mealType: 'Lunch', name: 'Chicken Shawarma Salad Bowl', portionGuide: '100 g grilled chicken + salad + 2 tbsp hummus + 1/2 pita', sugarImpact: 'Low', description: 'Shawarma spices keep it familiar while the salad base controls calories and carbs.', calories: lunchCal, macros: { carbs: Math.round(lunchCal * 0.32 / 4), protein: Math.round(lunchCal * 0.40 / 4), fat: Math.round(lunchCal * 0.28 / 9) }, tags: ['Middle Eastern', 'High Protein'], ingredients: ['Chicken', 'Lettuce', 'Hummus', 'Whole-wheat pita'] },
+      { mealType: 'Dinner', name: 'Grilled Fish with Tabbouleh', portionGuide: '120 g grilled fish + 1 cup tabbouleh + yoghurt dip', sugarImpact: 'Low', description: 'Fish gives lean protein and tabbouleh brings herbs, fibre, and a modest grain portion.', calories: dinnerCal, macros: { carbs: Math.round(dinnerCal * 0.30 / 4), protein: Math.round(dinnerCal * 0.42 / 4), fat: Math.round(dinnerCal * 0.28 / 9) }, tags: ['Middle Eastern', 'Goal-friendly'], ingredients: ['Fish', 'Parsley', 'Bulgur', 'Yoghurt'] },
+      { mealType: 'Snack', name: 'Hummus with Carrot Sticks', portionGuide: '3 tbsp hummus + carrot and cucumber sticks', sugarImpact: 'Low', description: 'A fibre-rich snack with steady plant protein and controlled calories.', calories: snackCal, macros: { carbs: Math.round(snackCal * 0.42 / 4), protein: Math.round(snackCal * 0.20 / 4), fat: Math.round(snackCal * 0.38 / 9) }, tags: ['Middle Eastern', 'Snack'], ingredients: ['Hummus', 'Carrot', 'Cucumber'] },
+    ],
+    chinese: [
+      { mealType: 'Breakfast', name: 'Egg Drop Soup with Greens', portionGuide: '1 bowl egg drop soup + bok choy or spinach', sugarImpact: 'Low', description: 'A warm Chinese-style breakfast with protein and vegetables, keeping refined carbs low.', calories: breakfastCal, macros: { carbs: Math.round(breakfastCal * 0.25 / 4), protein: Math.round(breakfastCal * 0.40 / 4), fat: Math.round(breakfastCal * 0.35 / 9) }, tags: ['Chinese', 'Low Carb'], ingredients: ['Egg', 'Broth', 'Bok choy'] },
+      { mealType: 'Lunch', name: 'Chicken Vegetable Stir-Fry', portionGuide: '100 g chicken + 2 cups vegetables + 1/2 cup brown rice', sugarImpact: 'Moderate', description: 'This keeps the Chinese stir-fry style while using lean protein, extra vegetables, and a measured rice serving.', calories: lunchCal, macros: { carbs: Math.round(lunchCal * 0.38 / 4), protein: Math.round(lunchCal * 0.38 / 4), fat: Math.round(lunchCal * 0.24 / 9) }, tags: ['Chinese', 'High Protein'], ingredients: ['Chicken', 'Mixed vegetables', 'Brown rice'] },
+      { mealType: 'Dinner', name: 'Steamed Fish with Greens', portionGuide: '120 g steamed fish + greens + 1/3 cup rice', sugarImpact: 'Low', description: 'Steamed fish is light and protein-rich, with a small rice portion to keep the meal balanced.', calories: dinnerCal, macros: { carbs: Math.round(dinnerCal * 0.32 / 4), protein: Math.round(dinnerCal * 0.44 / 4), fat: Math.round(dinnerCal * 0.24 / 9) }, tags: ['Chinese', 'Goal-friendly'], ingredients: ['Fish', 'Ginger', 'Greens', 'Rice'] },
+      { mealType: 'Snack', name: 'Edamame Bowl', portionGuide: '1/2 cup steamed edamame with light salt', sugarImpact: 'Low', description: 'Edamame adds plant protein and fibre without a sugar-heavy snack.', calories: snackCal, macros: { carbs: Math.round(snackCal * 0.32 / 4), protein: Math.round(snackCal * 0.38 / 4), fat: Math.round(snackCal * 0.30 / 9) }, tags: ['Chinese', 'Snack'], ingredients: ['Edamame'] },
+    ],
+    continental: [
+      { mealType: 'Breakfast', name: 'Scrambled Eggs with Whole-Grain Toast', portionGuide: '2 scrambled eggs + 1 slice whole-grain toast + tomatoes', sugarImpact: 'Low', description: 'A balanced continental breakfast with protein, fibre, and a controlled toast portion.', calories: breakfastCal, macros: { carbs: Math.round(breakfastCal * 0.35 / 4), protein: Math.round(breakfastCal * 0.32 / 4), fat: Math.round(breakfastCal * 0.33 / 9) }, tags: ['Continental', 'High Protein'], ingredients: ['Eggs', 'Whole-grain bread', 'Tomato'] },
+      { mealType: 'Lunch', name: 'Turkey Avocado Salad', portionGuide: '100 g turkey + mixed greens + 1/4 avocado + 1 small whole-grain roll', sugarImpact: 'Low', description: 'Lean turkey and vegetables make lunch filling while the bread portion stays modest.', calories: lunchCal, macros: { carbs: Math.round(lunchCal * 0.32 / 4), protein: Math.round(lunchCal * 0.40 / 4), fat: Math.round(lunchCal * 0.28 / 9) }, tags: ['Continental', 'Goal-friendly'], ingredients: ['Turkey', 'Greens', 'Avocado', 'Whole-grain roll'] },
+      { mealType: 'Dinner', name: 'Grilled Salmon with Vegetables', portionGuide: '120 g salmon + roasted vegetables + 1/2 cup quinoa', sugarImpact: 'Low', description: 'Salmon and quinoa provide protein and steady energy without a heavy refined-carb load.', calories: dinnerCal, macros: { carbs: Math.round(dinnerCal * 0.30 / 4), protein: Math.round(dinnerCal * 0.38 / 4), fat: Math.round(dinnerCal * 0.32 / 9) }, tags: ['Continental', 'Omega-3'], ingredients: ['Salmon', 'Vegetables', 'Quinoa'] },
+      { mealType: 'Snack', name: 'Cottage Cheese with Berries', portionGuide: '1/2 cup cottage cheese + 1/3 cup berries', sugarImpact: 'Low', description: 'A protein-forward snack with a small fruit portion for sweetness and fibre.', calories: snackCal, macros: { carbs: Math.round(snackCal * 0.32 / 4), protein: Math.round(snackCal * 0.38 / 4), fat: Math.round(snackCal * 0.30 / 9) }, tags: ['Continental', 'Snack'], ingredients: ['Cottage cheese', 'Berries'] },
+    ],
+  };
 
   const mealTemplates = [
     {
@@ -809,6 +875,16 @@ function getFallbackMeals(dayIndex, calorieTarget, user = null) {
     },
   ];
 
+  const routine = String(user?.coachProfile?.mealsPerDay || '');
+  if (selectedFallbackCuisine !== 'southAsian' && cuisineFallbacks[selectedFallbackCuisine]) {
+    const cuisineMeals = cuisineFallbacks[selectedFallbackCuisine];
+    if (/2 meals \+ 1 snack/i.test(routine)) return [cuisineMeals[0], cuisineMeals[3], cuisineMeals[2]];
+    if (/2 meals/i.test(routine)) return [cuisineMeals[0], cuisineMeals[2]];
+    if (/3 meals \+ 1 snack/i.test(routine)) return cuisineMeals;
+    if (/3 meals/i.test(routine)) return cuisineMeals.slice(0, 3);
+    return cuisineMeals;
+  }
+
   const template = { ...mealTemplates[dayIndex % mealTemplates.length] };
   const outside = outsideTemplates[dayIndex % outsideTemplates.length];
   const mealManagement = String(user?.coachProfile?.mealManagement || '').toLowerCase();
@@ -828,7 +904,6 @@ function getFallbackMeals(dayIndex, calorieTarget, user = null) {
     };
   }
 
-  const routine = String(user?.coachProfile?.mealsPerDay || '');
   if (/2 meals \+ 1 snack/i.test(routine)) return [template.breakfast, template.snack, template.dinner];
   if (/2 meals/i.test(routine)) return [template.breakfast, template.dinner];
   if (/3 meals \+ 1 snack/i.test(routine)) return [template.breakfast, template.lunch, template.dinner, template.snack];
@@ -1032,11 +1107,21 @@ export const dietRescue = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Meal plan not found' });
     }
 
-    const today = new Date();
-    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const startDate = new Date(activePlan.startDate);
-    const planStartDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
-    const diffDays = Math.max(0, Math.floor((todayDate.getTime() - planStartDate.getTime()) / 86400000));
+    const clientRange = buildClientDayRange({
+      today: true,
+      timezoneOffset: req.body?.timezoneOffset ?? req.query?.timezoneOffset,
+    });
+    const todayDate = clientRange?.start || (() => {
+      const today = new Date();
+      return new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    })();
+    const tomorrowDate = clientRange?.end || (() => {
+      const d = new Date(todayDate);
+      d.setDate(d.getDate() + 1);
+      return d;
+    })();
+    const planStartDate = new Date(activePlan.startDate);
+    const diffDays = Math.max(0, Math.round((todayDate.getTime() - planStartDate.getTime()) / 86400000));
     const dayIndex = Math.min(diffDays, Math.max(0, (activePlan.days?.length || 1) - 1));
     const dayPlan = activePlan.days?.[dayIndex];
     if (!dayPlan || !Array.isArray(dayPlan.meals) || dayPlan.meals.length === 0) {
@@ -1049,8 +1134,6 @@ export const dietRescue = async (req, res) => {
       fat: Number(dayPlan.totalMacros?.fat ?? activePlan.dailyMacroTargets?.fat ?? 0),
     };
 
-    const tomorrowDate = new Date(todayDate);
-    tomorrowDate.setDate(tomorrowDate.getDate() + 1);
     const foodLogs = await FoodLog.find({
       userId: req.userId,
       $or: [
@@ -1077,7 +1160,7 @@ export const dietRescue = async (req, res) => {
     }
     const consumed = foodLogs.reduce((sum, log) => sum + (Number(log.calories) || 0), 0);
     const consumedProtein = foodLogs.reduce(
-      (sum, log) => sum + (Number(log.macros?.protein) || Number(log.protein) || 0),
+      (sum, log) => sum + proteinFromLog(log),
       0
     );
     const dailyCalorieTarget = Number(activePlan.dailyCalorieTarget || dayPlan.totalCalories || 0);
@@ -1159,6 +1242,7 @@ export const dietRescue = async (req, res) => {
 
     dayPlan.totalCalories = preservedDayTotalCalories;
     dayPlan.totalMacros = preservedDayTotalMacros;
+    activePlan.markModified('days');
     await activePlan.save();
 
     return res.json({

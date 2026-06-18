@@ -36,4 +36,7 @@ router.post('/iap/verify', authenticate, [
   body('transactionId').optional().trim(),
 ], chatController.verifyCarePurchase);
 
+// Clear stale premium after a restore completes with no active purchases
+router.post('/iap/restore/none', authenticate, chatController.clearCarePremiumAfterRestore);
+
 export default router;

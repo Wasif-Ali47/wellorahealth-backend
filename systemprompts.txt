@@ -88,7 +88,7 @@ RULES:
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
 - Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
 - Description should explain WHY this meal supports the user's goal (2-3 sentences).
-- Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
+- Include "waterTargetLitres" as a personalized litre target based on the user's weight, activity level, climate/routine context, and health profile. Use 0.25L steps, for example 2.5, 2.75, 3.25, or 3.5.
 
 Return JSON only:
 {"waterTargetLitres":3,"meals":[${mealSchema}]}
@@ -122,7 +122,7 @@ REQUIREMENTS:
 - Each meal MUST support the user's main goal and stay near the calorie/macro target.
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
 - Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
-- Include "waterTargetLitres" as a whole number of litres for the day, rounded to the nearest litre.
+- Include "waterTargetLitres" as a personalized litre target based on the user's weight, activity level, climate/routine context, and health profile. Use 0.25L steps, for example 2.5, 2.75, 3.25, or 3.5.
 
 Return JSON only:
 {"waterTargetLitres":3,"days":[{"meals":[${mealSchema}]}, ... 7 days total ...]}

@@ -35,6 +35,25 @@ function computeUserIsPro(user) {
   return user?.subscriptionPlan === 'Premium';
 }
 
+function normalizeSubscriptionStatus(status) {
+  const normalized = String(status || 'inactive').toLowerCase();
+  const allowed = new Set(['inactive', 'active', 'expired', 'cancelled', 'verify_failed', 'unsupported']);
+  if (normalized === 'unsupported_platform') return 'unsupported';
+  return allowed.has(normalized) ? normalized : 'inactive';
+}
+
+async function clearPremiumEntitlement(user, status = 'inactive', source = 'restore') {
+  user.isPro = false;
+  user.subscriptionPlan = 'Free';
+  user.subscription = {
+    ...(user.subscription || {}),
+    status: normalizeSubscriptionStatus(status),
+    source,
+    lastVerifiedAt: new Date(),
+  };
+  await user.save();
+}
+
 function isGuestUser(user) {
   if (user?.emailVerified === false) return true;
   return /^guest_[^@]+@wellorahealth\.app$/i.test(String(user?.email || ''));
@@ -63,13 +82,7 @@ async function buildEntitlement(user) {
     user?.subscription?.expiresAt &&
     new Date(user.subscription.expiresAt).getTime() <= Date.now()
   ) {
-    user.isPro = false;
-    user.subscriptionPlan = 'Free';
-    user.subscription = {
-      ...(user.subscription || {}),
-      status: 'expired',
-    };
-    await user.save();
+    await clearPremiumEntitlement(user, 'expired', user.subscription?.source || 'expiry_check');
   }
 
   const isPro = computeUserIsPro(user);
@@ -505,6 +518,7 @@ export const verifyCarePurchase = async (req, res) => {
     });
 
     if (!verification.ok) {
+      await clearPremiumEntitlement(user, verification.status || 'verify_failed', verification.source || 'verify_failed');
       return res.status(400).json({
         success: false,
         message: 'Purchase verification failed',
@@ -540,6 +554,37 @@ export const verifyCarePurchase = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to verify purchase',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Restore completed without any active purchase from the app store.
+ * Clear stale Premium on the backend so entitlement reflects the store result.
+ */
+export const clearCarePremiumAfterRestore = async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    await clearPremiumEntitlement(user, 'inactive', 'restore_no_active_purchase');
+
+    res.json({
+      success: true,
+      message: 'No active restored purchase found. Premium removed.',
+      entitlement: await buildEntitlement(user),
+    });
+  } catch (error) {
+    console.error('Clear premium after restore error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to clear premium after restore',
       error: error.message,
     });
   }
