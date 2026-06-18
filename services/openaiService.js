@@ -159,8 +159,29 @@ function buildWelloraContext(user) {
 - Weight loss challenges: ${challenges}`;
 }
 
-function getMealRoutineConfig(user) {
+function irregularMealTypesForDay(dayNumber) {
+  const patterns = [
+    ['Breakfast', 'Lunch', 'Dinner'],
+    ['Breakfast', 'Lunch', 'Dinner', 'Snack'],
+    ['Breakfast', 'Dinner'],
+    ['Breakfast', 'Snack', 'Dinner'],
+    ['Breakfast', 'Lunch', 'Dinner', 'Snack'],
+    ['Breakfast', 'Dinner'],
+    ['Breakfast', 'Lunch', 'Dinner'],
+  ];
+  return patterns[Math.max(0, (Number(dayNumber) || 1) - 1) % patterns.length];
+}
+
+function getMealRoutineConfig(user, dayNumber = 1) {
   const routine = user.coachProfile?.mealsPerDay || '';
+  if (/irregular/i.test(routine)) {
+    const mealTypes = irregularMealTypesForDay(dayNumber);
+    return {
+      instruction: `IRREGULAR ROUTINE: Generate exactly ${mealTypes.length} meals for Day ${dayNumber}. The meals array MUST contain exactly these entries in this order: ${mealTypes.join(', ')}. Across a 7-day plan, vary meal count between 2, 3, and 4 meals instead of using the same count every day.`,
+      mealTypes,
+      count: mealTypes.length,
+    };
+  }
   if (/2 meals \+ 1 snack/i.test(routine)) return {
     instruction: 'CRITICAL: Generate EXACTLY 3 meals. The meals array MUST contain exactly these 3 entries in this order: Breakfast, Snack, Dinner. DO NOT include Lunch.',
     mealTypes: ['Breakfast', 'Snack', 'Dinner'],
@@ -180,11 +201,6 @@ function getMealRoutineConfig(user) {
     instruction: 'CRITICAL: Generate EXACTLY 3 meals. The meals array MUST contain exactly these 3 entries in this order: Breakfast, Lunch, Dinner. DO NOT include Snack.',
     mealTypes: ['Breakfast', 'Lunch', 'Dinner'],
     count: 3,
-  };
-  if (/irregular/i.test(routine)) return {
-    instruction: 'CRITICAL: Generate EXACTLY 4 meals: Breakfast, Lunch, Dinner, Snack.',
-    mealTypes: ['Breakfast', 'Lunch', 'Dinner', 'Snack'],
-    count: 4,
   };
   return {
     instruction: 'CRITICAL: Generate EXACTLY 4 meals: Breakfast, Lunch, Dinner, Snack.',
@@ -240,7 +256,7 @@ Core rules:
 6. Avoid crash diets, extreme fasting, detoxes, miracle claims, guilt, punishment, and unsafe very-low-calorie advice.
 7. Be condition-aware but not medical. Recommend qualified professional help for medical diets, medication changes, pregnancy, diabetes management, hypertension, cholesterol, thyroid issues, eating disorders, or serious symptoms.
 8. Be specific. Do not say "eat healthy food" without naming foods and portions.
-9. Use variety and avoid overusing salads, oats, boiled eggs, grilled chicken, or generic Western diet meals unless they match the user.
+9. CRITICAL: Use maximum variety in meals. Rotate proteins (chicken, fish, lentils, beans, eggs, paneer, mutton, tofu), cooking methods (grilled, stir-fried, steamed, curried, baked, boiled), vegetables, and grains. Minimize repetition — avoid using the same meal more than once per week, and avoid overusing salads, oats, boiled eggs, or grilled chicken unless it matches the user's cuisine and preferences.
 10. When JSON is requested, return one valid JSON object only: double-quoted keys/strings, no markdown, no comments, no trailing commas, no NaN/undefined, no extra text.`;
 
 // ---------------------------------------------------------------------------
@@ -257,7 +273,7 @@ export async function generateMealPlanDayWithAI(user, dailyCalorieTarget, dailyM
 
   try {
     const context = buildWelloraContext(user);
-    const routineConfig = getMealRoutineConfig(user);
+    const routineConfig = getMealRoutineConfig(user, dayNumber);
     const calorieLines = buildMealCalorieLines(routineConfig.mealTypes, dailyCalorieTarget);
     const mealSchema = buildMealJsonSchema(routineConfig.mealTypes);
     const mealManagementInstruction = buildMealManagementInstruction(user);
@@ -280,13 +296,14 @@ RULES:
 - If the user selected mixed routine, make the day feel genuinely mixed: include both a home/prepped option and an outside/ordered/cafeteria-friendly option when ${routineConfig.count} meals allows it.
 - Completely exclude allergies, intolerances, restricted foods, and disliked foods from every meal and ingredient.
 - Use only these meal types, in this order: [${routineConfig.mealTypes.join(', ')}].
+- Maximize variety: use diverse proteins (chicken, fish, lentils, beans, eggs, paneer, etc.), varied vegetables, different cooking methods (grilled, stir-fried, steamed, curried, baked), and varied grains/bases (rice, roti, quinoa, oats, bread).
 - Each meal MUST include a clear "portionGuide" in everyday units that match the selected cuisine.
 - Each meal MUST support the user's main goal and stay near the calorie/macro target.
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
 - Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
 - Description should explain WHY this meal supports the user's goal in 1-2 short sentences.
 - Include "waterTargetLitres" as a personalized litre target based on the user's weight, activity level, climate/routine context, and health profile. Use 0.25L steps, for example 2.5, 2.75, 3.25, or 3.5.
-- Before returning, internally verify exact meal count, valid JSON, realistic calories/protein, clear portions, and no restricted foods.
+- Before returning, internally verify exact meal count, valid JSON, realistic calories/protein, clear portions, good protein/veggie/method variety, and no restricted foods.
 
 Return JSON only — the meals array MUST have exactly ${routineConfig.count} entries:
 {"waterTargetLitres":3,"meals":[
@@ -336,7 +353,7 @@ ${mealSchema}
       ingredients: meal.ingredients || []
     }));
 
-    const expectedCount = getMealRoutineConfig(user).count;
+    const expectedCount = getMealRoutineConfig(user, dayNumber).count;
     if (meals.length !== expectedCount || !meals.every(m => m.name && m.mealType && m.calories > 0)) {
       throw new Error(`Invalid meal structure: expected ${expectedCount} meals, got ${meals.length}`);
     }
@@ -385,13 +402,13 @@ REQUIREMENTS:
 - If the user selected mixed routine, vary each day across home-cooked/prepped meals and outside/ordered/cafeteria-friendly meals. When meal count allows, include at least one of each style per day.
 - Completely exclude allergies, intolerances, restricted foods, and disliked foods from every meal and ingredient.
 - Use only these meal types, in this order: [${routineConfig.mealTypes.join(', ')}].
-- Vary meals across the 7 days (no exact repeats).
+- CRITICAL VARIETY: Across the 7 days, meals must be genuinely different (not just name changes). Use diverse proteins (chicken, fish, lentils, beans, eggs, paneer, mutton, etc.), varied vegetables, different cooking methods (grilled, stir-fried, steamed, curried, baked, boiled), and varied grains/bases (rice, roti, quinoa, oats, bread). Minimize repetition to at most 1-2 meals appearing twice across the 7 days in different variations.
 - Each meal MUST include "portionGuide" in everyday units that match the selected cuisine.
 - Each meal MUST support the user's main goal and stay near the calorie/macro target.
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
 - Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
 - Include "waterTargetLitres" as a personalized litre target based on the user's weight, activity level, climate/routine context, and health profile. Use 0.25L steps, for example 2.5, 2.75, 3.25, or 3.5.
-- Before returning, internally verify 7 days, exact meal count per day, valid JSON, realistic calories/protein, clear portions, good variety, and no restricted foods.
+- Before returning, internally verify 7 days, exact meal count per day, valid JSON, realistic calories/protein, clear portions, strong variety across proteins/vegetables/cooking methods, and no restricted foods.
 
 Return JSON only — each day's meals array MUST have exactly ${routineConfig.count} entries:
 {"waterTargetLitres":3,"days":[{"meals":[
@@ -539,11 +556,13 @@ export async function generateFoodSwapsWithAI(user, foodName) {
 
   try {
     const context = buildWelloraContext(user);
+    const cuisineInstruction = buildCuisineInstruction(user);
 
     const prompt = `${context}
 
 Suggest 4 SMART MEAL SWAPS for: "${foodName}".
-Each swap must be culturally appropriate (use roti, rice, daal, salan, qeema, biryani, fruits etc. when relevant), affordable for the user's budget and quick to prepare.
+${cuisineInstruction}
+Each swap must match the user's preferred cuisine, full profile, allergies, restrictions, meal routine, budget, and cooking time. Do not use foods from another cuisine just because they are common locally.
 The swaps must feel like realistic alternatives with similar meal purpose and similar nutritional benefits, not random low-calorie snacks.
 Do not include allergies, restricted foods, or disliked foods. Keep portions specific and goal-friendly.
 
@@ -553,7 +572,7 @@ Return JSON only:
     {
       "original": "${foodName}",
       "swap": "name of the swap",
-      "portion": "everyday-unit portion, e.g. '1 roti + ½ cup daal'",
+      "portion": "everyday-unit portion that matches the selected cuisine",
       "sugarImpact": "Low" | "Moderate",
       "why": "1 sentence why this better supports the user's goal"
     }

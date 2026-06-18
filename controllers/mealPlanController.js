@@ -95,8 +95,22 @@ function waterTargetLitresForUser(user) {
   return Math.round(targetMl / 250) * 0.25;
 }
 
-function expectedMealCountForUser(user) {
+function irregularMealTypesForDay(dayNumber) {
+  const patterns = [
+    ['Breakfast', 'Lunch', 'Dinner'],
+    ['Breakfast', 'Lunch', 'Dinner', 'Snack'],
+    ['Breakfast', 'Dinner'],
+    ['Breakfast', 'Snack', 'Dinner'],
+    ['Breakfast', 'Lunch', 'Dinner', 'Snack'],
+    ['Breakfast', 'Dinner'],
+    ['Breakfast', 'Lunch', 'Dinner'],
+  ];
+  return patterns[Math.max(0, (Number(dayNumber) || 1) - 1) % patterns.length];
+}
+
+function expectedMealCountForUser(user, dayNumber = 1) {
   const routine = String(user?.coachProfile?.mealsPerDay || '');
+  if (/irregular/i.test(routine)) return irregularMealTypesForDay(dayNumber).length;
   if (/2 meals \+ 1 snack/i.test(routine)) return 3;
   if (/2 meals/i.test(routine)) return 2;
   if (/3 meals \+ 1 snack/i.test(routine)) return 4;
@@ -166,8 +180,12 @@ function cuisineKeyForFallback(user) {
 function hasSouthAsianCuisineMarker(meal) {
   const text = [
     meal?.name,
+    meal?.swap,
+    meal?.original,
+    meal?.why,
     meal?.description,
     meal?.portionGuide,
+    meal?.portion,
     ...(Array.isArray(meal?.ingredients) ? meal.ingredients : []),
     ...(Array.isArray(meal?.tags) ? meal.tags : []),
   ]
@@ -216,7 +234,6 @@ export const generateMealPlan = async (req, res) => {
     const dailyCalorieTarget = calculateCalorieTarget(user);
     const dailyMacroTargets = calculateMacroTargets(dailyCalorieTarget);
     const waterTargetLitres = waterTargetLitresForUser(user);
-    const expectedMealCount = expectedMealCountForUser(user);
     console.log(`[generateMealPlan] User profile loaded. Calorie target: ${dailyCalorieTarget}kcal`);
 
     // Anchor day 1 to the client's local calendar date, not the server's —
@@ -302,6 +319,9 @@ export const generateMealPlan = async (req, res) => {
 
       // Try to generate all 7 days in one API call (faster)
       try {
+        if (/irregular/i.test(String(user?.coachProfile?.mealsPerDay || ''))) {
+          throw new Error('Irregular routine uses per-day generation for varied meal counts');
+        }
         console.log('[generateMealPlan] Attempting to generate full 7-day plan in one API call...');
         const result = await generateMealPlanWithAI(user, dailyCalorieTarget, dailyMacroTargets);
         recordOpenAiUsage(req.userId, result?.usage, 'meal-plan', 'gpt-4o-mini').catch(() => {});
@@ -352,6 +372,7 @@ export const generateMealPlan = async (req, res) => {
       const isReusedDay = aiDays[i]?.reused === true;
 
       // Validate meals or use fallback
+      const expectedMealCount = expectedMealCountForUser(user, i + 1);
       const hasValidMeals = isReusedDay
         ? hasUsableMeals(meals, 1)
         : hasUsableMeals(meals, expectedMealCount);
@@ -377,11 +398,12 @@ export const generateMealPlan = async (req, res) => {
 
     let mealPlan;
     if (shouldExtendExistingPlan && existingActivePlan) {
+      // Extend existing plan: keep original daily targets, only add new days
       mealPlan = existingActivePlan;
       mealPlan.startDate = startDate;
       mealPlan.endDate = endDate;
-      mealPlan.dailyCalorieTarget = dailyCalorieTarget;
-      mealPlan.dailyMacroTargets = dailyMacroTargets;
+      // IMPORTANT: Preserve original daily targets — they should never change during the week
+      // dailyCalorieTarget and dailyMacroTargets remain unchanged
       mealPlan.waterTargetLitres = waterTargetLitres;
       mealPlan.days = days;
       mealPlan.isActive = true;
@@ -390,6 +412,7 @@ export const generateMealPlan = async (req, res) => {
         { isActive: false }
       );
     } else {
+      // New plan: set daily targets based on current user profile
       mealPlan = new MealPlan({
         userId: req.userId,
         startDate,
@@ -464,9 +487,10 @@ export const regenerateRemainingMealPlan = async (req, res) => {
       });
     }
 
-    const dailyCalorieTarget = calculateCalorieTarget(user);
-    const dailyMacroTargets = calculateMacroTargets(dailyCalorieTarget);
-    const expectedMealCount = expectedMealCountForUser(user);
+    // Use the plan's existing daily targets — do NOT recalculate them
+    // Plan targets are set at creation and remain constant throughout the week
+    const dailyCalorieTarget = activePlan.dailyCalorieTarget;
+    const dailyMacroTargets = activePlan.dailyMacroTargets;
     const todayLogs = await FoodLog.find({
       userId: req.userId,
       $or: [
@@ -495,6 +519,7 @@ export const regenerateRemainingMealPlan = async (req, res) => {
     for (let i = 0; i < remainingDays.length; i++) {
       const day = remainingDays[i];
       let newMeals = dayResults[i]?.meals || [];
+      const expectedMealCount = expectedMealCountForUser(user, day.dayNumber || (dayIndex + i + 1));
       const hasValidMeals =
         Array.isArray(newMeals) &&
         newMeals.length >= expectedMealCount &&
@@ -536,8 +561,8 @@ export const regenerateRemainingMealPlan = async (req, res) => {
       );
     }
 
-    activePlan.dailyCalorieTarget = dailyCalorieTarget;
-    activePlan.dailyMacroTargets = dailyMacroTargets;
+    // Keep the plan's original daily targets — they should NOT change during the week
+    // Only regenerate meals, water target, and clear grocery list cache
     activePlan.waterTargetLitres = waterTargetLitresForUser(user);
     activePlan.groceryList = null;
     activePlan.groceryListGeneratedAt = null;
@@ -878,6 +903,15 @@ function getFallbackMeals(dayIndex, calorieTarget, user = null) {
   const routine = String(user?.coachProfile?.mealsPerDay || '');
   if (selectedFallbackCuisine !== 'southAsian' && cuisineFallbacks[selectedFallbackCuisine]) {
     const cuisineMeals = cuisineFallbacks[selectedFallbackCuisine];
+    if (/irregular/i.test(routine)) {
+      const mealsByType = {
+        Breakfast: cuisineMeals[0],
+        Lunch: cuisineMeals[1],
+        Dinner: cuisineMeals[2],
+        Snack: cuisineMeals[3],
+      };
+      return irregularMealTypesForDay(dayIndex + 1).map((type) => mealsByType[type]).filter(Boolean);
+    }
     if (/2 meals \+ 1 snack/i.test(routine)) return [cuisineMeals[0], cuisineMeals[3], cuisineMeals[2]];
     if (/2 meals/i.test(routine)) return [cuisineMeals[0], cuisineMeals[2]];
     if (/3 meals \+ 1 snack/i.test(routine)) return cuisineMeals;
@@ -908,6 +942,15 @@ function getFallbackMeals(dayIndex, calorieTarget, user = null) {
   if (/2 meals/i.test(routine)) return [template.breakfast, template.dinner];
   if (/3 meals \+ 1 snack/i.test(routine)) return [template.breakfast, template.lunch, template.dinner, template.snack];
   if (/3 meals/i.test(routine)) return [template.breakfast, template.lunch, template.dinner];
+  if (/irregular/i.test(routine)) {
+    const mealsByType = {
+      Breakfast: template.breakfast,
+      Lunch: template.lunch,
+      Dinner: template.dinner,
+      Snack: template.snack,
+    };
+    return irregularMealTypesForDay(dayIndex + 1).map((type) => mealsByType[type]).filter(Boolean);
+  }
   return [template.breakfast, template.lunch, template.dinner, template.snack];
 }
 
@@ -988,16 +1031,14 @@ export const foodSwaps = async (req, res) => {
       const result = await generateFoodSwapsWithAI(user, food.trim());
       const swaps = Array.isArray(result) ? result : result?.swaps;
       if (!swaps || !swaps.length) throw new Error('No swaps returned');
+      if (!mealsMatchSelectedCuisine(swaps, user)) {
+        throw new Error('AI swaps did not match selected cuisine');
+      }
       recordOpenAiUsage(req.userId, result?.usage, 'food-swap', 'gpt-4o-mini').catch(() => {});
       return res.json({ success: true, food: food.trim(), swaps });
     } catch (err) {
       console.warn('[foodSwaps] AI failed, using fallback:', err.message);
-      const fallback = [
-        { original: food.trim(), swap: 'Vegetable salad with lemon', portion: '1 bowl', sugarImpact: 'Low', why: 'High fibre, very low GI.' },
-        { original: food.trim(), swap: 'Plain yoghurt with chia', portion: '1 cup', sugarImpact: 'Low', why: 'High protein, no added sugar.' },
-        { original: food.trim(), swap: 'Boiled chana chaat (no chutney sugar)', portion: '½ cup', sugarImpact: 'Low', why: 'Plant protein + fibre, slow digestion.' },
-        { original: food.trim(), swap: 'Apple + 6 almonds', portion: '1 small apple', sugarImpact: 'Low', why: 'Natural sweetness balanced by fat & protein.' }
-      ];
+      const fallback = getCuisineSwapFallbacks(food.trim(), user);
       return res.json({ success: true, food: food.trim(), swaps: fallback });
     }
   } catch (error) {
@@ -1005,6 +1046,39 @@ export const foodSwaps = async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to get swaps', error: error.message });
   }
 };
+
+function getCuisineSwapFallbacks(food, user) {
+  const original = food.trim();
+  const cuisine = cuisineKeyForFallback(user);
+  const byCuisine = {
+    italian: [
+      { original, swap: 'Grilled Chicken Caprese Bowl', portion: '1 bowl with greens, tomato, mozzarella, and beans', sugarImpact: 'Low', why: 'Italian-style lean protein and fibre with controlled carbs.' },
+      { original, swap: 'Turkey Meatballs with Zucchini', portion: '3 small meatballs + 1 cup zucchini noodles', sugarImpact: 'Low', why: 'Keeps Italian flavour while lowering refined carbs.' },
+      { original, swap: 'Ricotta Berry Toast', portion: '1 whole-grain toast + ricotta + berries', sugarImpact: 'Low', why: 'Balanced protein, fibre, and a modest bread portion.' },
+    ],
+    continental: [
+      { original, swap: 'Turkey Avocado Salad', portion: '1 bowl + 1 small whole-grain roll', sugarImpact: 'Low', why: 'Continental-style lean protein with filling vegetables.' },
+      { original, swap: 'Grilled Salmon with Vegetables', portion: '120 g salmon + vegetables + 1/2 cup quinoa', sugarImpact: 'Low', why: 'High protein and steady carbs without a heavy refined portion.' },
+      { original, swap: 'Scrambled Eggs with Whole-Grain Toast', portion: '2 eggs + 1 toast + tomatoes', sugarImpact: 'Low', why: 'Simple, filling, and aligned with a Continental plan.' },
+    ],
+    middleEastern: [
+      { original, swap: 'Chicken Shawarma Salad Bowl', portion: '100 g chicken + salad + hummus + 1/2 pita', sugarImpact: 'Low', why: 'Middle Eastern flavour with controlled bread and plenty of protein.' },
+      { original, swap: 'Labneh Plate with Cucumber', portion: '1/2 cup labneh + vegetables + small whole-wheat pita', sugarImpact: 'Low', why: 'Protein and vegetables keep it light and satisfying.' },
+      { original, swap: 'Hummus with Carrot Sticks', portion: '3 tbsp hummus + vegetable sticks', sugarImpact: 'Low', why: 'Fibre-rich and portion controlled.' },
+    ],
+    chinese: [
+      { original, swap: 'Chicken Vegetable Stir-Fry', portion: '100 g chicken + 2 cups vegetables + 1/2 cup brown rice', sugarImpact: 'Moderate', why: 'Chinese-style balanced swap with controlled rice.' },
+      { original, swap: 'Steamed Fish with Greens', portion: '120 g fish + greens + 1/3 cup rice', sugarImpact: 'Low', why: 'Light, protein-rich, and lower in refined carbs.' },
+      { original, swap: 'Egg Drop Soup with Greens', portion: '1 bowl', sugarImpact: 'Low', why: 'Warm, filling, and gentle on calories.' },
+    ],
+  };
+  return byCuisine[cuisine] || [
+    { original, swap: 'Vegetable salad with lemon', portion: '1 bowl', sugarImpact: 'Low', why: 'High fibre, very low GI.' },
+    { original, swap: 'Plain yoghurt with chia', portion: '1 cup', sugarImpact: 'Low', why: 'High protein, no added sugar.' },
+    { original, swap: 'Boiled chana chaat (no chutney sugar)', portion: '1/2 cup', sugarImpact: 'Low', why: 'Plant protein + fibre, slow digestion.' },
+    { original, swap: 'Apple + 6 almonds', portion: '1 small apple', sugarImpact: 'Low', why: 'Natural sweetness balanced by fat and protein.' },
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // Diet Rescue
@@ -1056,25 +1130,32 @@ const rescueMacroSplit = (calories, mealType, proteinGrams = null) => {
 };
 
 const dietRescueMealTitle = (name) => {
-  const originalName = String(name || 'Meal')
+  let originalName = String(name || 'Meal')
     .replace(/^Diet Rescue Meal:\s*/i, '')
     .replace(/^Diet Rescue\s+/i, '')
     .trim();
+  if (originalName.startsWith('Swapped Meal:')) {
+    originalName = originalName.replace(/^Swapped Meal:\s*/i, '').trim();
+  }
   return `Diet Rescue Meal: ${originalName || 'Meal'}`;
 };
 
 const normalizeFoodNameForRescue = (value) =>
   String(value || '')
     .replace(/^Diet Rescue Meal:\s*/i, '')
+    .replace(/^Swapped Meal:\s*/i, '')
     .replace(/^(Breakfast|Lunch|Dinner|Snack)\s*:\s*/i, '')
     .trim()
     .toLowerCase();
 
-const buildRescueMeal = (meal, calories, proteinGrams) => {
+const buildRescueMeal = (meal, calories, proteinGrams, user, dailyTarget = 1800, dayIndex = 0) => {
   const originalName = meal.name;
   const mealType = meal.mealType || 'Snack';
   const key = String(mealType).toLowerCase();
+  const cuisineMeal = getFallbackMeals(dayIndex, dailyTarget, user)
+    .find((candidate) => String(candidate.mealType || '').toLowerCase() === key);
   const template =
+    cuisineMeal ||
     (key.includes('breakfast') && rescueMealTemplates.breakfast) ||
     (key.includes('lunch') && rescueMealTemplates.lunch) ||
     (key.includes('dinner') && rescueMealTemplates.dinner) ||
@@ -1086,7 +1167,7 @@ const buildRescueMeal = (meal, calories, proteinGrams) => {
   meal.sugarImpact = 'Low';
   meal.calories = calories;
   meal.macros = rescueMacroSplit(calories, mealType, proteinGrams);
-  meal.tags = Array.from(new Set([...(meal.tags || []), 'Diet Rescue', 'Light meal', 'Low calorie']));
+  meal.tags = Array.from(new Set([...(template.tags || []), 'Diet Rescue', 'Light meal', 'Low calorie']));
   meal.ingredients = template.ingredients;
 };
 
@@ -1127,6 +1208,7 @@ export const dietRescue = async (req, res) => {
     if (!dayPlan || !Array.isArray(dayPlan.meals) || dayPlan.meals.length === 0) {
       return res.status(404).json({ success: false, message: 'No meals found for today.' });
     }
+    // Preserve this day's original totals before diet rescue adjusts remaining meals
     const preservedDayTotalCalories = Number(dayPlan.totalCalories) || Number(activePlan.dailyCalorieTarget || 0);
     const preservedDayTotalMacros = {
       carbs: Number(dayPlan.totalMacros?.carbs ?? activePlan.dailyMacroTargets?.carbs ?? 0),
@@ -1205,19 +1287,25 @@ export const dietRescue = async (req, res) => {
       const type = String(meal.mealType || '').toLowerCase();
       return sum + (type.includes('snack') ? 8 : 18);
     }, 0);
+    // Rescue budget for calories: allow modest overage (10-15% buffer) for realistic meals
+    // e.g., if only 200kcal remaining, allow up to ~220kcal so meals are viable
+    const calorieBuffer = Math.ceil(dailyCalorieTarget * 0.10); // ~10% tolerance
+    const maxAllowedCalories = (remainingBudget || minRemainingCalories) + calorieBuffer;
     const rescueBudget = Math.max(
       minRemainingCalories,
       Math.min(
         originalRemainingCalories || minRemainingCalories,
-        remainingBudget || minRemainingCalories
+        maxAllowedCalories
       )
     );
-    const remainingProteinBudget = Math.max(
-      minRemainingProtein,
-      Math.min(
-        originalRemainingProtein || minRemainingProtein,
-        Math.max(0, dailyProteinTarget - consumedProtein)
-      )
+    // Rescue budget for protein: allow modest overage (10-15% buffer) for realistic meals
+    // e.g., if 10g remaining, allow up to ~15g so meals don't become unrealistically tiny
+    const actualRemainingProtein = Math.max(0, dailyProteinTarget - consumedProtein);
+    const proteinBuffer = Math.ceil(dailyProteinTarget * 0.12); // ~12% tolerance
+    const maxAllowedProtein = actualRemainingProtein + proteinBuffer;
+    const remainingProteinBudget = Math.min(
+      originalRemainingProtein || minRemainingProtein,
+      maxAllowedProtein
     );
     const originalBudget = originalRemainingCalories || remainingMeals.length;
     const originalProteinBudget = originalRemainingProtein || remainingMeals.length;
@@ -1233,11 +1321,13 @@ export const dietRescue = async (req, res) => {
       const maxCalories = Math.max(minCalories, originalCalories);
       const rescueCalories = Math.round(rescueBudget * share);
       const newCalories = Math.max(minCalories, Math.min(maxCalories, rescueCalories));
-      const minProtein = type.includes('snack') ? 8 : 18;
+      const nominalMinProtein = type.includes('snack') ? 8 : 18;
       const rescueProtein = Math.round(remainingProteinBudget * proteinShare);
-      const maxProtein = Math.max(minProtein, Math.floor((newCalories * 0.48) / 4));
-      const newProtein = Math.max(minProtein, Math.min(maxProtein, rescueProtein));
-      buildRescueMeal(meal, newCalories, newProtein);
+      const maxProtein = Math.max(nominalMinProtein, Math.floor((newCalories * 0.48) / 4));
+      // Allow protein to go below nominal minimum if needed to fit within daily budget (prevents overflow)
+      const flexMinProtein = Math.min(nominalMinProtein, remainingProteinBudget / remainingMeals.length);
+      const newProtein = Math.max(flexMinProtein, Math.min(maxProtein, rescueProtein));
+      buildRescueMeal(meal, newCalories, newProtein, user, dailyCalorieTarget, dayIndex);
     }
 
     dayPlan.totalCalories = preservedDayTotalCalories;
