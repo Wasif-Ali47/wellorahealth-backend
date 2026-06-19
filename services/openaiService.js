@@ -562,7 +562,7 @@ export async function generateFoodSwapsWithAI(user, foodName) {
 
     const prompt = `${context}
 
-Suggest 4 SMART MEAL SWAPS for: "${foodName}".
+Suggest 1 SMART MEAL SWAP for: "${foodName}".
 ${cuisineInstruction}
 Each swap must match the user's preferred cuisine, full profile, allergies, restrictions, meal routine, budget, and cooking time. Do not use foods from another cuisine just because they are common locally.
 The swaps must feel like realistic alternatives with similar meal purpose and similar nutritional benefits, not random low-calorie snacks.
