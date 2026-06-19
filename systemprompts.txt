@@ -25,6 +25,7 @@ Core principles you ALWAYS apply:
 6. Avoid extreme restriction, crash diets, detoxes, unsafe fasting, miracle claims, or shaming language.
 7. Consider health conditions and medications when provided, but never replace medical advice.
 8. Be specific, varied, and practical.
+9. STRICT DAILY TARGETS: When generating meal plans, EVERY DAY must hit the EXACT same daily calorie and macro targets provided. No day can have different totals. Each day must be consistent in total calories, protein, carbs, and fat targets.
 Return ONLY valid JSON when a JSON schema is requested. No markdown, no extra commentary.
 
 ============================================================
@@ -111,13 +112,14 @@ ${calorieLines}
 
 Macro targets per day: Carbs ${dailyMacroTargets.carbs}g, Protein ${dailyMacroTargets.protein}g, Fat ${dailyMacroTargets.fat}g.
 
-REQUIREMENTS:
+STRICT REQUIREMENTS:
+- EVERY SINGLE DAY must have the SAME total daily calories and the SAME daily macro targets. No exceptions. Verify total calories and macros for each day before returning.
 - Use the user's local foods, likes, budget and cooking time wherever possible.
 - Meal management rule: ${mealManagementInstruction}
 - If the user selected mixed routine, vary each day across home-cooked/prepped meals and outside/ordered/cafeteria-friendly meals.
 - Completely exclude allergies, intolerances, restricted foods, and disliked foods.
 - Use only the allowed meal types, in the required order.
-- Vary meals across the 7 days (no exact repeats).
+- NO meal can have the exact same name on multiple days. Each day must have completely different meals with different names. Maximum 1 similar concept across the 7 days but with genuinely different preparation or ingredients.
 - Each meal MUST include "portionGuide" in everyday units.
 - Each meal MUST support the user's main goal and stay near the calorie/macro target.
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.

@@ -257,7 +257,8 @@ Core rules:
 7. Be condition-aware but not medical. Recommend qualified professional help for medical diets, medication changes, pregnancy, diabetes management, hypertension, cholesterol, thyroid issues, eating disorders, or serious symptoms.
 8. Be specific. Do not say "eat healthy food" without naming foods and portions.
 9. CRITICAL: Use maximum variety in meals. Rotate proteins (chicken, fish, lentils, beans, eggs, paneer, mutton, tofu), cooking methods (grilled, stir-fried, steamed, curried, baked, boiled), vegetables, and grains. Minimize repetition — avoid using the same meal more than once per week, and avoid overusing salads, oats, boiled eggs, or grilled chicken unless it matches the user's cuisine and preferences.
-10. When JSON is requested, return one valid JSON object only: double-quoted keys/strings, no markdown, no comments, no trailing commas, no NaN/undefined, no extra text.`;
+10. STRICT DAILY TARGETS: When generating meal plans, EVERY DAY must hit the EXACT same daily calorie and macro targets provided. No day can have different totals. Each day must be consistent in total calories, protein, carbs, and fat targets.
+11. When JSON is requested, return one valid JSON object only: double-quoted keys/strings, no markdown, no comments, no trailing commas, no NaN/undefined, no extra text.`;
 
 // ---------------------------------------------------------------------------
 // 1) Daily / weekly Wellora meal plan
@@ -395,20 +396,21 @@ ${calorieLines}
 
 Macro targets per day: Carbs ${dailyMacroTargets.carbs}g, Protein ${dailyMacroTargets.protein}g, Fat ${dailyMacroTargets.fat}g.
 
-REQUIREMENTS:
+STRICT REQUIREMENTS:
+- EVERY SINGLE DAY must have the SAME total daily calories and the SAME daily macro targets (${dailyMacroTargets.carbs}g carbs, ${dailyMacroTargets.protein}g protein, ${dailyMacroTargets.fat}g fat). No exceptions. Verify total calories and macros for each day before returning.
 - Use the user's likes, budget and cooking time wherever possible, but never override the selected cuisine.
 - ${cuisineInstruction}
 - Meal management rule: ${mealManagementInstruction}
 - If the user selected mixed routine, vary each day across home-cooked/prepped meals and outside/ordered/cafeteria-friendly meals. When meal count allows, include at least one of each style per day.
 - Completely exclude allergies, intolerances, restricted foods, and disliked foods from every meal and ingredient.
 - Use only these meal types, in this order: [${routineConfig.mealTypes.join(', ')}].
-- CRITICAL VARIETY: Across the 7 days, meals must be genuinely different (not just name changes). Use diverse proteins (chicken, fish, lentils, beans, eggs, paneer, mutton, etc.), varied vegetables, different cooking methods (grilled, stir-fried, steamed, curried, baked, boiled), and varied grains/bases (rice, roti, quinoa, oats, bread). Minimize repetition to at most 1-2 meals appearing twice across the 7 days in different variations.
+- CRITICAL VARIETY - NO REPETITION: Across the 7 days, NO meal can have the exact same name on multiple days. Each day must have completely different meals with different names. Use diverse proteins (chicken, fish, lentils, beans, eggs, paneer, mutton, etc.), varied vegetables, different cooking methods (grilled, stir-fried, steamed, curried, baked, boiled), and varied grains/bases (rice, roti, quinoa, oats, bread). Maximum 1 similar concept (e.g., "Chicken Curry" and "Chicken Fry") but with genuinely different preparation, ingredients, or sauce across the 7 days.
 - Each meal MUST include "portionGuide" in everyday units that match the selected cuisine.
 - Each meal MUST support the user's main goal and stay near the calorie/macro target.
 - Keep "sugarImpact" as "Low", "Moderate", or "Watch" for UI compatibility, but keep the explanation focused on the user's diet goal unless they have sugar-related concerns.
 - Avoid sugary drinks, frequent sweets, and oversized portions unless the user's goal allows it.
 - Include "waterTargetLitres" as a personalized litre target based on the user's weight, activity level, climate/routine context, and health profile. Use 0.25L steps, for example 2.5, 2.75, 3.25, or 3.5.
-- Before returning, internally verify 7 days, exact meal count per day, valid JSON, realistic calories/protein, clear portions, strong variety across proteins/vegetables/cooking methods, and no restricted foods.
+- Before returning, internally verify: 7 days, exact meal count per day, valid JSON, ALL DAYS have identical total calories and macros, realistic calories/protein, clear portions, strong variety across proteins/vegetables/cooking methods, and no restricted foods.
 
 Return JSON only — each day's meals array MUST have exactly ${routineConfig.count} entries:
 {"waterTargetLitres":3,"days":[{"meals":[

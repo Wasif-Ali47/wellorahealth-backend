@@ -9,7 +9,7 @@ import {
   generateFoodSwapsWithAI,
   generateGroceryListWithAI
 } from '../services/openaiService.js';
-import { buildClientDayRange, proteinFromLog } from '../utils/foodLogHelpers.js';
+import { buildClientDayRange } from '../utils/foodLogHelpers.js';
 import { recordOpenAiUsage } from '../utils/trackUsage.js';
 
 /**
@@ -1083,60 +1083,12 @@ function getCuisineSwapFallbacks(food, user) {
 // ---------------------------------------------------------------------------
 // Diet Rescue
 // ---------------------------------------------------------------------------
-const rescueMealTemplates = {
-  breakfast: {
-    name: 'Diet Rescue Veggie Egg Plate',
-    portionGuide: '2 boiled egg whites + cucumber-tomato salad + unsweetened tea',
-    description: 'A very light protein-focused breakfast with fresh vegetables to keep the rest of the day steady after extra food.',
-    ingredients: ['Egg whites', 'Cucumber', 'Tomato', 'Green tea'],
-  },
-  lunch: {
-    name: 'Diet Rescue Grilled Chicken Salad',
-    portionGuide: '1 large salad bowl + 90 g grilled chicken + lemon dressing, no sugary sauces',
-    description: 'Lean protein and high-volume vegetables replace heavier lunch items so the remaining day stays lighter.',
-    ingredients: ['Chicken breast', 'Lettuce', 'Cucumber', 'Tomato', 'Lemon'],
-  },
-  dinner: {
-    name: 'Diet Rescue Clear Soup + Salad',
-    portionGuide: '1 large bowl vegetable clear soup + side cucumber salad',
-    description: 'A low-calorie dinner built around broth and non-starchy vegetables to compensate for overeating earlier.',
-    ingredients: ['Vegetable broth', 'Spinach', 'Carrot', 'Cucumber', 'Lemon'],
-  },
-  snack: {
-    name: 'Diet Rescue Cucumber Raita',
-    portionGuide: '1 small bowl plain yoghurt cucumber raita, no added sugar',
-    description: 'A small cooling snack with protein and water-rich cucumber, designed to avoid pushing calories higher.',
-    ingredients: ['Plain yoghurt', 'Cucumber', 'Mint'],
-  },
-};
-
-const rescueMacroSplit = (calories, mealType, proteinGrams = null) => {
-  const type = String(mealType || '').toLowerCase();
-  const fallbackProteinRatio = type.includes('snack') ? 0.22 : 0.38;
-  const maxProteinFromCalories = Math.floor((calories * 0.48) / 4);
-  const protein = proteinGrams == null
-    ? Math.round((calories * fallbackProteinRatio) / 4)
-    : Math.max(0, Math.min(maxProteinFromCalories, Math.round(proteinGrams)));
-  const carbRatio = type.includes('dinner') ? 0.25 : 0.32;
-  const proteinCalories = protein * 4;
-  const remainingCalories = Math.max(0, calories - proteinCalories);
-  const carbs = Math.max(0, Math.round((calories * carbRatio) / 4));
-  const fat = Math.max(0, Math.round(Math.max(0, remainingCalories - (carbs * 4)) / 9));
-  return {
-    carbs,
-    protein,
-    fat,
-  };
-};
 
 const dietRescueMealTitle = (name) => {
-  let originalName = String(name || 'Meal')
+  const originalName = String(name || 'Meal')
     .replace(/^Diet Rescue Meal:\s*/i, '')
-    .replace(/^Diet Rescue\s+/i, '')
+    .replace(/^Swapped Meal:\s*/i, '')
     .trim();
-  if (originalName.startsWith('Swapped Meal:')) {
-    originalName = originalName.replace(/^Swapped Meal:\s*/i, '').trim();
-  }
   return `Diet Rescue Meal: ${originalName || 'Meal'}`;
 };
 
@@ -1148,27 +1100,17 @@ const normalizeFoodNameForRescue = (value) =>
     .trim()
     .toLowerCase();
 
-const buildRescueMeal = (meal, calories, proteinGrams, user, dailyTarget = 1800, dayIndex = 0) => {
-  const originalName = meal.name;
-  const mealType = meal.mealType || 'Snack';
-  const key = String(mealType).toLowerCase();
-  const cuisineMeal = getFallbackMeals(dayIndex, dailyTarget, user)
-    .find((candidate) => String(candidate.mealType || '').toLowerCase() === key);
-  const template =
-    cuisineMeal ||
-    (key.includes('breakfast') && rescueMealTemplates.breakfast) ||
-    (key.includes('lunch') && rescueMealTemplates.lunch) ||
-    (key.includes('dinner') && rescueMealTemplates.dinner) ||
-    rescueMealTemplates.snack;
-
-  meal.name = dietRescueMealTitle(originalName);
-  meal.description = template.description;
-  meal.portionGuide = template.portionGuide;
-  meal.sugarImpact = 'Low';
-  meal.calories = calories;
-  meal.macros = rescueMacroSplit(calories, mealType, proteinGrams);
-  meal.tags = Array.from(new Set([...(template.tags || []), 'Diet Rescue', 'Light meal', 'Low calorie']));
-  meal.ingredients = template.ingredients;
+// Applies a single scale factor to a meal's calories and all macros.
+// The meal content (name after prefix, description, portionGuide, ingredients) stays the same.
+const buildRescueMeal = (meal, scale) => {
+  meal.name = dietRescueMealTitle(meal.name);
+  meal.calories = Math.max(1, Math.round((Number(meal.calories) || 0) * scale));
+  meal.macros = {
+    protein: Math.max(0, Math.round((meal.macros?.protein || 0) * scale)),
+    carbs:   Math.max(0, Math.round((meal.macros?.carbs   || 0) * scale)),
+    fat:     Math.max(0, Math.round((meal.macros?.fat     || 0) * scale)),
+  };
+  meal.tags = Array.from(new Set([...(meal.tags || []), 'Diet Rescue']));
 };
 
 export const dietRescue = async (req, res) => {
@@ -1240,14 +1182,24 @@ export const dietRescue = async (req, res) => {
         code: 'NO_EXTRA_FOOD_LOGGED',
       });
     }
-    const consumed = foodLogs.reduce((sum, log) => sum + (Number(log.calories) || 0), 0);
-    const consumedProtein = foodLogs.reduce(
-      (sum, log) => sum + proteinFromLog(log),
-      0
-    );
-    const dailyCalorieTarget = Number(activePlan.dailyCalorieTarget || dayPlan.totalCalories || 0);
+    // Totals consumed today across ALL food logs (plan meals + extra food)
+    const consumed         = foodLogs.reduce((s, l) => s + (Number(l.calories)       || 0), 0);
+    const consumedProtein  = foodLogs.reduce((s, l) => s + (Number(l.macros?.protein) || 0), 0);
+    const consumedCarbs    = foodLogs.reduce((s, l) => s + (Number(l.macros?.carbs)   || 0), 0);
+    const consumedFat      = foodLogs.reduce((s, l) => s + (Number(l.macros?.fat)     || 0), 0);
+
+    // Daily targets
+    const dailyCalTarget     = Number(activePlan.dailyCalorieTarget || dayPlan.totalCalories || 0);
     const dailyProteinTarget = Number(activePlan.dailyMacroTargets?.protein || dayPlan.totalMacros?.protein || 0);
-    const remainingBudget = Math.max(0, dailyCalorieTarget - consumed);
+    const dailyCarbsTarget   = Number(activePlan.dailyMacroTargets?.carbs   || dayPlan.totalMacros?.carbs   || 0);
+    const dailyFatTarget     = Number(activePlan.dailyMacroTargets?.fat     || dayPlan.totalMacros?.fat     || 0);
+
+    // Remaining budget for each nutrient (how much space is left for the remaining meals)
+    const remainingCal     = Math.max(0, dailyCalTarget     - consumed);
+    const remainingProtein = Math.max(0, dailyProteinTarget - consumedProtein);
+    const remainingCarbs   = Math.max(0, dailyCarbsTarget   - consumedCarbs);
+    const remainingFat     = Math.max(0, dailyFatTarget     - consumedFat);
+
     const completedKeys = new Set(
       foodLogs
         .filter((log) => log.source === 'meal_plan' && log.status === 'completed' && log.plannedMealKey)
@@ -1271,63 +1223,47 @@ export const dietRescue = async (req, res) => {
       });
     }
 
-    const originalRemainingCalories = remainingMeals.reduce(
-      (sum, meal) => sum + (Number(meal.calories) || 0),
-      0
-    );
-    const originalRemainingProtein = remainingMeals.reduce(
-      (sum, meal) => sum + (Number(meal.macros?.protein) || 0),
-      0
-    );
-    const minRemainingCalories = remainingMeals.reduce((sum, meal) => {
-      const type = String(meal.mealType || '').toLowerCase();
-      return sum + (type.includes('snack') ? 140 : 260);
-    }, 0);
-    const minRemainingProtein = remainingMeals.reduce((sum, meal) => {
-      const type = String(meal.mealType || '').toLowerCase();
-      return sum + (type.includes('snack') ? 8 : 18);
-    }, 0);
-    // Rescue budget for calories: allow modest overage (10-15% buffer) for realistic meals
-    // e.g., if only 200kcal remaining, allow up to ~220kcal so meals are viable
-    const calorieBuffer = Math.ceil(dailyCalorieTarget * 0.10); // ~10% tolerance
-    const maxAllowedCalories = (remainingBudget || minRemainingCalories) + calorieBuffer;
-    const rescueBudget = Math.max(
-      minRemainingCalories,
-      Math.min(
-        originalRemainingCalories || minRemainingCalories,
-        maxAllowedCalories
-      )
-    );
-    // Rescue budget for protein: allow modest overage (10-15% buffer) for realistic meals
-    // e.g., if 10g remaining, allow up to ~15g so meals don't become unrealistically tiny
-    const actualRemainingProtein = Math.max(0, dailyProteinTarget - consumedProtein);
-    const proteinBuffer = Math.ceil(dailyProteinTarget * 0.12); // ~12% tolerance
-    const maxAllowedProtein = actualRemainingProtein + proteinBuffer;
-    const remainingProteinBudget = Math.min(
-      originalRemainingProtein || minRemainingProtein,
-      maxAllowedProtein
-    );
-    const originalBudget = originalRemainingCalories || remainingMeals.length;
-    const originalProteinBudget = originalRemainingProtein || remainingMeals.length;
+    // Sum of remaining meals' nutrients
+    const origCal     = remainingMeals.reduce((s, m) => s + (Number(m.calories)       || 0), 0);
+    const origProtein = remainingMeals.reduce((s, m) => s + (Number(m.macros?.protein) || 0), 0);
+    const origCarbs   = remainingMeals.reduce((s, m) => s + (Number(m.macros?.carbs)   || 0), 0);
+    const origFat     = remainingMeals.reduce((s, m) => s + (Number(m.macros?.fat)     || 0), 0);
+
+    // Only rescue if at least one nutrient in the remaining meals exceeds its remaining budget.
+    // A small tolerance (5%) avoids blocking rescue due to rounding from a prior rescue.
+    const tolerance = 0.05;
+    const hasOverflow =
+      origCal     > remainingCal     * (1 + tolerance) ||
+      origProtein > remainingProtein * (1 + tolerance) ||
+      origCarbs   > remainingCarbs   * (1 + tolerance) ||
+      origFat     > remainingFat     * (1 + tolerance);
+
+    if (!hasOverflow) {
+      return res.status(400).json({
+        success: false,
+        message: 'Your remaining meals are already within your daily goal. Log more extra food before running Diet Rescue again.',
+        code: 'NO_RESCUE_NEEDED',
+      });
+    }
+
+    // Scale factor for each nutrient: how much to shrink remaining meals so they fit the budget.
+    // Never above 1 (never increase). If budget > original, no scaling needed (scale = 1).
+    const scaleFor = (budget, original) => (original > 0 ? Math.min(1, budget / original) : 1);
+    const calScale     = scaleFor(remainingCal,     origCal);
+    const proteinScale = scaleFor(remainingProtein, origProtein);
+    const carbsScale   = scaleFor(remainingCarbs,   origCarbs);
+    const fatScale     = scaleFor(remainingFat,     origFat);
+
+    // Use the most restrictive scale so NO nutrient overflows the daily goal
+    const scale = Math.min(calScale, proteinScale, carbsScale, fatScale);
+
+    console.log(`[dietRescue] scale=${scale.toFixed(3)} (cal=${calScale.toFixed(2)} protein=${proteinScale.toFixed(2)} carbs=${carbsScale.toFixed(2)} fat=${fatScale.toFixed(2)})`);
+    console.log(`[dietRescue] remaining budget: ${remainingCal}kcal / ${remainingProtein}g protein | orig meals: ${origCal}kcal / ${origProtein}g protein`);
 
     for (const meal of remainingMeals) {
-      const originalCalories = Number(meal.calories) || (originalBudget / remainingMeals.length);
-      const share = originalBudget > 0 ? originalCalories / originalBudget : 1 / remainingMeals.length;
-      const proteinShare = originalProteinBudget > 0
-        ? (Number(meal.macros?.protein) || 0) / originalProteinBudget
-        : share;
-      const type = String(meal.mealType || '').toLowerCase();
-      const minCalories = type.includes('snack') ? 140 : 260;
-      const maxCalories = Math.max(minCalories, originalCalories);
-      const rescueCalories = Math.round(rescueBudget * share);
-      const newCalories = Math.max(minCalories, Math.min(maxCalories, rescueCalories));
-      const nominalMinProtein = type.includes('snack') ? 8 : 18;
-      const rescueProtein = Math.round(remainingProteinBudget * proteinShare);
-      const maxProtein = Math.max(nominalMinProtein, Math.floor((newCalories * 0.48) / 4));
-      // Allow protein to go below nominal minimum if needed to fit within daily budget (prevents overflow)
-      const flexMinProtein = Math.min(nominalMinProtein, remainingProteinBudget / remainingMeals.length);
-      const newProtein = Math.max(flexMinProtein, Math.min(maxProtein, rescueProtein));
-      buildRescueMeal(meal, newCalories, newProtein, user, dailyCalorieTarget, dayIndex);
+      console.log(`[dietRescue] ${meal.mealType} "${meal.name}" ${meal.calories}kcal ${meal.macros?.protein}g protein → scale ${scale.toFixed(3)}`);
+      buildRescueMeal(meal, scale);
+      console.log(`[dietRescue] after: ${meal.calories}kcal ${meal.macros?.protein}g protein`);
     }
 
     dayPlan.totalCalories = preservedDayTotalCalories;
@@ -1335,11 +1271,14 @@ export const dietRescue = async (req, res) => {
     activePlan.markModified('days');
     await activePlan.save();
 
+    const rescuedTypes = remainingMeals.map((m) => m.mealType).join(', ');
+    console.log(`[dietRescue] Rescued ${remainingMeals.length} meal(s): ${rescuedTypes}`);
+
     return res.json({
       success: true,
-      message: `Diet Rescue updated ${remainingMeals.length} remaining meal${remainingMeals.length === 1 ? '' : 's'} for today.`,
+      message: `Diet Rescue updated ${remainingMeals.length} remaining meal${remainingMeals.length === 1 ? '' : 's'} for today (${rescuedTypes}).`,
       adjustedMeals: remainingMeals.length,
-      remainingBudget,
+      remainingCalBudget: remainingCal,
     });
   } catch (error) {
     console.error('[dietRescue] error:', error);
