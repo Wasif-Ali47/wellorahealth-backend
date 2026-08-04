@@ -167,7 +167,7 @@ app.get('/api', (req, res) => {
           'PUT /:id/days/:dayNumber'
         ]
       },
-      chat: { base: '/api/chat', endpoints: ['POST /message', 'GET /history', 'GET /entitlement', 'POST /iap/verify'] },
+      chat: { base: '/api/chat', endpoints: ['POST /message', 'GET /history', 'GET /entitlement', 'GET /limits', 'POST /iap/verify', 'POST /iap/restore/none'] },
       reminders: { base: '/api/reminders', endpoints: ['GET /', 'POST /', 'PUT /:id', 'DELETE /:id'] },
       export: { base: '/api/export', endpoints: ['GET /data'] },
       notifications: { base: '/api/notifications', endpoints: ['POST /register-token', 'POST /send'] },

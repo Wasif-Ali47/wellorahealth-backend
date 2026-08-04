@@ -8,6 +8,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const GOOGLE_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/androidpublisher';
 const DEFAULT_ANDROID_PACKAGE_NAME = 'com.wellorahealth.app.aiappspace';
+const ACTIVE_V2_STATES = new Set([
+  'SUBSCRIPTION_STATE_ACTIVE',
+  'SUBSCRIPTION_STATE_CANCELED',
+  'SUBSCRIPTION_STATE_IN_GRACE_PERIOD',
+]);
 
 let cachedAccessToken = null;
 let cachedAccessTokenExpMs = 0;
@@ -120,19 +125,81 @@ function buildAndroidSubscriptionResult(data) {
   };
 }
 
+function parseTime(value) {
+  if (!value) return 0;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function buildAndroidSubscriptionV2Result(data, productId) {
+  const now = Date.now();
+  const lineItems = Array.isArray(data?.lineItems) ? data.lineItems : [];
+  const matchingLine =
+    lineItems.find((item) => item?.productId === productId) || lineItems[0] || null;
+  const expiryMs = Math.max(
+    0,
+    ...lineItems
+      .map((item) => parseTime(item?.expiryTime))
+      .filter((ms) => Number.isFinite(ms) && ms > 0)
+  );
+  const subscriptionState = data?.subscriptionState;
+  const active = expiryMs > now && ACTIVE_V2_STATES.has(subscriptionState);
+  const autoRenewingPlan = matchingLine?.autoRenewingPlan || null;
+
+  return {
+    ok: active,
+    status: active ? 'active' : 'expired',
+    expiresAt: expiryMs ? new Date(expiryMs).toISOString() : null,
+    platform: 'android',
+    source: 'google_play_v2',
+    payload: {
+      subscriptionState,
+      acknowledgementState: data?.acknowledgementState,
+      linkedPurchaseToken: data?.linkedPurchaseToken,
+      regionCode: data?.regionCode,
+      latestSuccessfulOrderId: matchingLine?.latestSuccessfulOrderId,
+      productId: matchingLine?.productId,
+      autoRenewEnabled: autoRenewingPlan?.autoRenewEnabled,
+      planType: matchingLine?.autoRenewingPlan
+        ? 'auto_renewing'
+        : matchingLine?.prepaidPlan
+          ? 'prepaid'
+          : null,
+      kind: data?.kind,
+    },
+  };
+}
+
 async function verifyAndroidPurchase({ packageName, productId, purchaseToken }) {
   if (!packageName || !productId || !purchaseToken) {
     throw new Error('Missing packageName/productId/purchaseToken');
   }
 
   const accessToken = await getGoogleAccessToken();
-  const url = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(
+
+  const v2Url = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(
+    packageName
+  )}/purchases/subscriptionsv2/tokens/${encodeURIComponent(purchaseToken)}`;
+
+  try {
+    const { data } = await axios.get(v2Url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: 15000,
+    });
+    return buildAndroidSubscriptionV2Result(data, productId);
+  } catch (e) {
+    const status = e?.response?.status;
+    const message = e?.response?.data?.error?.message || e.message;
+    console.warn('[iapVerify] subscriptionsv2 failed; trying legacy endpoint:', message || status);
+  }
+
+  const legacyUrl = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(
     packageName
   )}/purchases/subscriptions/${encodeURIComponent(productId)}/tokens/${encodeURIComponent(
     purchaseToken
   )}`;
 
-  const { data } = await axios.get(url, {
+  const { data } = await axios.get(legacyUrl, {
     headers: { Authorization: `Bearer ${accessToken}` },
     timeout: 15000,
   });

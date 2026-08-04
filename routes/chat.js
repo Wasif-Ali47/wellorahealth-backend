@@ -27,6 +27,9 @@ router.delete('/history', authenticate, chatController.clearChatHistory);
 // Get care entitlement status
 router.get('/entitlement', authenticate, chatController.getCareEntitlement);
 
+// Get care chat limit configuration
+router.get('/limits', authenticate, chatController.getCareLimits);
+
 // Verify in-app purchase and unlock premium
 router.post('/iap/verify', authenticate, [
   body('platform').optional().isIn(['android', 'ios', 'web']),

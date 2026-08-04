@@ -4,6 +4,12 @@ import User from '../models/User.js';
 import { generateChatResponse } from '../services/openaiService.js';
 import { recordOpenAiUsage } from '../utils/trackUsage.js';
 import { verifyIapPurchase } from '../services/iapVerificationService.js';
+import {
+  buildCareLimitConfig,
+  computeUserIsPro,
+  getCareChatLimitForUser,
+  isGuestUser,
+} from '../services/careLimitService.js';
 import { validationResult } from 'express-validator';
 import {
   buildConversationTitle,
@@ -27,13 +33,8 @@ function serializeMessage(doc) {
   };
 }
 
-const FREE_CHAT_LIMIT = Number(process.env.CARE_FREE_CHAT_LIMIT || 5);
-const REGISTERED_CHAT_LIMIT = Number(process.env.CARE_REGISTERED_CHAT_LIMIT || 15);
-
-function computeUserIsPro(user) {
-  if (user?.isPro) return true;
-  return user?.subscriptionPlan === 'Premium';
-}
+const STORE_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const STORE_REFRESH_EXPIRY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function normalizeSubscriptionStatus(status) {
   const normalized = String(status || 'inactive').toLowerCase();
@@ -54,9 +55,71 @@ async function clearPremiumEntitlement(user, status = 'inactive', source = 'rest
   await user.save();
 }
 
-function isGuestUser(user) {
-  if (user?.emailVerified === false) return true;
-  return /^guest_[^@]+@wellorahealth\.app$/i.test(String(user?.email || ''));
+function isAmazonClient(req) {
+  const header = String(req.get('X-App-Store') || '').trim().toLowerCase();
+  const envFlag = String(process.env.IS_FOR_AMAZON || '').trim().toLowerCase();
+  return header === 'amazon' || envFlag === 'true' || envFlag === '1';
+}
+
+function shouldRefreshStoreSubscription(user, force = false) {
+  if (force) return true;
+  const subscription = user?.subscription || {};
+  if (subscription.platform !== 'android') return false;
+  if (!subscription.productId || !subscription.purchaseToken) return false;
+
+  const now = Date.now();
+  const lastVerifiedMs = subscription.lastVerifiedAt
+    ? new Date(subscription.lastVerifiedAt).getTime()
+    : 0;
+  const expiresAtMs = subscription.expiresAt
+    ? new Date(subscription.expiresAt).getTime()
+    : 0;
+
+  if (!lastVerifiedMs || now - lastVerifiedMs >= STORE_REFRESH_INTERVAL_MS) {
+    return true;
+  }
+  return Boolean(expiresAtMs && expiresAtMs - now <= STORE_REFRESH_EXPIRY_WINDOW_MS);
+}
+
+async function applyStoreVerification(user, verification) {
+  if (!verification.ok) {
+    await clearPremiumEntitlement(
+      user,
+      verification.status || 'verify_failed',
+      verification.source || 'google_play'
+    );
+    return;
+  }
+
+  user.isPro = true;
+  user.subscriptionPlan = 'Premium';
+  user.subscription = {
+    ...(user.subscription || {}),
+    status: verification.status || 'active',
+    expiresAt: verification.expiresAt ? new Date(verification.expiresAt) : null,
+    source: verification.source || 'google_play',
+    lastVerifiedAt: new Date(),
+  };
+  await user.save();
+}
+
+async function refreshStoredStoreSubscription(user, options = {}) {
+  const force = options.force === true;
+  const subscription = user?.subscription || {};
+  if (!shouldRefreshStoreSubscription(user, force)) return null;
+
+  try {
+    const verification = await verifyIapPurchase({
+      platform: subscription.platform,
+      productId: subscription.productId,
+      purchaseToken: subscription.purchaseToken,
+    });
+    await applyStoreVerification(user, verification);
+    return verification;
+  } catch (err) {
+    console.warn('[chat entitlement] store refresh failed:', err.message);
+    return null;
+  }
 }
 
 async function ensureUsageCounter(user) {
@@ -73,11 +136,13 @@ async function ensureUsageCounter(user) {
   return stored;
 }
 
-async function buildEntitlement(user) {
+async function buildEntitlement(user, options = {}) {
   const totalUsed = await ensureUsageCounter(user);
+  const amazonUnlimited = options.amazonUnlimited === true;
 
   // Downgrade automatically if expiry passed.
   if (
+    !amazonUnlimited &&
     computeUserIsPro(user) &&
     user?.subscription?.expiresAt &&
     new Date(user.subscription.expiresAt).getTime() <= Date.now()
@@ -85,26 +150,33 @@ async function buildEntitlement(user) {
     await clearPremiumEntitlement(user, 'expired', user.subscription?.source || 'expiry_check');
   }
 
-  const isPro = computeUserIsPro(user);
+  const isPro = amazonUnlimited || computeUserIsPro(user);
   const isGuest = isGuestUser(user);
-  const limit = isGuest ? FREE_CHAT_LIMIT : REGISTERED_CHAT_LIMIT;
+  const limit = amazonUnlimited ? null : getCareChatLimitForUser(user);
   const used = totalUsed;
   const remaining = isPro ? null : Math.max(0, limit - used);
   return {
     isPro,
     isGuest,
+    isUnlimited: isPro,
     freeLimit: limit,
+    limit,
+    limits: buildCareLimitConfig(),
     used,
     remaining,
     hardLocked: !isPro && totalUsed >= limit,
     subscription: {
-      plan: user.subscriptionPlan || (isPro ? 'Premium' : 'Free'),
-      status: user?.subscription?.status || (isPro ? 'active' : 'inactive'),
+      plan: amazonUnlimited
+        ? 'Amazon'
+        : user.subscriptionPlan || (isPro ? 'Premium' : 'Free'),
+      status: amazonUnlimited
+        ? 'active'
+        : user?.subscription?.status || (isPro ? 'active' : 'inactive'),
       productId: user?.subscription?.productId || null,
-      platform: user?.subscription?.platform || 'none',
+      platform: amazonUnlimited ? 'amazon' : user?.subscription?.platform || 'none',
       expiresAt: user?.subscription?.expiresAt || null,
       lastVerifiedAt: user?.subscription?.lastVerifiedAt || null,
-      source: user?.subscription?.source || 'none',
+      source: amazonUnlimited ? 'amazon' : user?.subscription?.source || 'none',
     },
   };
 }
@@ -143,7 +215,9 @@ export const sendMessage = async (req, res) => {
       });
     }
 
-    const entitlement = await buildEntitlement(user);
+    const entitlement = await buildEntitlement(user, {
+      amazonUnlimited: isAmazonClient(req),
+    });
     if (entitlement.hardLocked) {
       const accountType = entitlement.isGuest ? 'Guest' : 'Free';
       return res.status(402).json({
@@ -190,7 +264,9 @@ export const sendMessage = async (req, res) => {
       updatedAt: new Date(),
     };
     await user.save();
-    const updatedEntitlement = await buildEntitlement(user);
+    const updatedEntitlement = await buildEntitlement(user, {
+      amazonUnlimited: isAmazonClient(req),
+    });
 
     try {
       // Generate AI response using OpenAI
@@ -290,7 +366,9 @@ export const getChatHistory = async (req, res) => {
     res.json({
       success: true,
       count: messages.length,
-      entitlement: await buildEntitlement(user),
+      entitlement: await buildEntitlement(user, {
+        amazonUnlimited: isAmazonClient(req),
+      }),
       messages: messages.map(serializeMessage),
     });
   } catch (error) {
@@ -448,9 +526,13 @@ export const getCareEntitlement = async (req, res) => {
       });
     }
 
+    await refreshStoredStoreSubscription(user);
+
     res.json({
       success: true,
-      entitlement: await buildEntitlement(user),
+      entitlement: await buildEntitlement(user, {
+        amazonUnlimited: isAmazonClient(req),
+      }),
     });
   } catch (error) {
     console.error('Get care entitlement error:', error);
@@ -460,6 +542,30 @@ export const getCareEntitlement = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+/**
+ * Get Care AI free-tier limit configuration.
+ */
+export const getCareLimits = async (req, res) => {
+  if (isAmazonClient(req)) {
+    return res.json({
+      success: true,
+      limits: {
+        guest: null,
+        registered: null,
+        pro: null,
+        proLabel: 'unlimited',
+        amazon: null,
+        amazonLabel: 'unlimited',
+      },
+    });
+  }
+
+  return res.json({
+    success: true,
+    limits: buildCareLimitConfig(),
+  });
 };
 
 /**
@@ -523,31 +629,33 @@ export const verifyCarePurchase = async (req, res) => {
         success: false,
         message: 'Purchase verification failed',
         verification,
-        entitlement: await buildEntitlement(user),
+        entitlement: await buildEntitlement(user, {
+          amazonUnlimited: isAmazonClient(req),
+        }),
       });
     }
 
-    user.isPro = true;
-    user.subscriptionPlan = 'Premium';
     user.subscription = {
       platform,
       productId,
       purchaseToken,
       originalTransactionId: transactionId || null,
-      status: verification.status || 'active',
-      expiresAt: verification.expiresAt
-        ? new Date(verification.expiresAt)
-        : fallbackSubscriptionExpiry(productId),
-      source: verification.source || 'unknown',
-      lastVerifiedAt: new Date(),
+      status: 'inactive',
+      expiresAt: null,
+      source: 'pending',
     };
-    await user.save();
+    await applyStoreVerification(user, {
+      ...verification,
+      expiresAt: verification.expiresAt || fallbackSubscriptionExpiry(productId),
+    });
 
     res.json({
       success: true,
       message: 'Purchase verified and premium unlocked',
       verification,
-      entitlement: await buildEntitlement(user),
+      entitlement: await buildEntitlement(user, {
+        amazonUnlimited: isAmazonClient(req),
+      }),
     });
   } catch (error) {
     console.error('Verify purchase error:', error);
@@ -578,7 +686,9 @@ export const clearCarePremiumAfterRestore = async (req, res) => {
     res.json({
       success: true,
       message: 'No active restored purchase found. Premium removed.',
-      entitlement: await buildEntitlement(user),
+      entitlement: await buildEntitlement(user, {
+        amazonUnlimited: isAmazonClient(req),
+      }),
     });
   } catch (error) {
     console.error('Clear premium after restore error:', error);
